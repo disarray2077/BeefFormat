@@ -1,0 +1,6 @@
+FileVersion = 1
+Dependencies = {corlib = "*", BeefFormat = "*", BeefParser = "*"}
+
+[Project]
+Name = "BeefFormat.Tests"
+TargetType = "BeefTest"

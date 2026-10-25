@@ -1,0 +1,9 @@
+FileVersion = 1
+
+[Workspace]
+StartupProject = "BeefFormat"
+
+[Projects]
+BeefFormat = {Path = "."}
+BeefParser = {Path = "../BeefParser"}
+"BeefFormat.Tests" = {Path = "Tests"}

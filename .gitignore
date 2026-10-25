@@ -1,0 +1,11 @@
+# Beef build output and local IDE state
+build/
+BeefSpace_User.toml
+recovery/
+.vs/
+
+# Local crash dumps and editor temporary files
+*.dmp
+*.tmp
+*.swp
+*~

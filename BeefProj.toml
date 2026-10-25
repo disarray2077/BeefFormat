@@ -1,0 +1,6 @@
+FileVersion = 1
+Dependencies = {corlib = "*", BeefParser = "*"}
+
+[Project]
+Name = "BeefFormat"
+StartupObject = "BeefFormat.Program"
