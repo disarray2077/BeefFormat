@@ -13,7 +13,7 @@ public static class CommandLine
 	}
 
 	static bool Excluded(StringView name, bool tests)
-		=> (!tests && name.Equals("Tests", true)) || name.Equals("build", true) || name.Equals("dist", true) || name.Equals("generated", true) || name.Equals("bin", true) || name.Equals("obj", true) || name == ".git" || name == ".svn" || name == ".hg" || name == "BeefSpace";
+		=> (!tests && name.Equals("Tests", true)) || name.Equals("build", true) || name.Equals("dist", true) || name.Equals("generated", true) || name.Equals("bin", true) || name.Equals("obj", true) || name.Equals(".git", true) || name.Equals(".svn", true) || name.Equals(".hg", true) || name.Equals("BeefSpace", true) || name.Equals("recovery", true);
 
 	static void Collect(StringView path, bool tests, List<String> files, ref bool error)
 	{
@@ -43,22 +43,29 @@ public static class CommandLine
 		Path.GetFileName(normalized, directoryName);
 		if (Excluded(directoryName, tests))
 			return;
-		for (let file in Directory.EnumerateFiles(path, "*.bf"))
+		let search = new String();
+		Path.Combine(search, path, "*");
+		Platform.BfpFileResult status = .Ok;
+		let handle = Platform.Hook.BfpFindFileData_FindFirstFile(search.CStr(), .Files | .Directories, &status);
+		var entries = FileEnumerator(search, handle);
+		defer entries.Dispose();
+		if (handle == null && status != .NoResults && status != .NotFound && status != .Ok)
 		{
-			let child = scope String();
-			file.GetFilePath(child);
-			Collect(child, tests, files, ref error);
+			Console.Error.WriteLine("{}: error: cannot enumerate directory ({})", path, status);
+			error = true;
+			return;
 		}
-		for (let directory in Directory.EnumerateDirectories(path))
+		while (entries.MoveNext())
 		{
-			let name = scope String();
-			directory.GetFileName(name);
-			if (Excluded(name, tests))
+			let entry = entries.Current;
+			if (entry.GetFileAttributes().HasFlag(.SymLink))
 				continue;
-			if (directory.GetFileAttributes().HasFlag(.SymLink))
+			let name = scope String();
+			entry.GetFileName(name);
+			if (entry.IsDirectory ? Excluded(name, tests) : !name.EndsWith(".bf", .OrdinalIgnoreCase))
 				continue;
 			let child = scope String();
-			directory.GetFilePath(child);
+			entry.GetFilePath(child);
 			Collect(child, tests, files, ref error);
 		}
 	}
@@ -231,10 +238,10 @@ public static class CommandLine
 
 	static int LineCount(StringView text)
 	{
-		int count = text.IsEmpty || text.EndsWith('\n') ? 0 : 1;
-		for (let c in text)
+		int count = (text.IsEmpty || text.EndsWith('\n') || text.EndsWith('\r')) ? 0 : 1;
+		for (int p = 0; p < text.Length; p++)
 		{
-			if (c == '\n')
+			if (text[p] == '\n' || text[p] == '\r' && (p + 1 == text.Length || text[p + 1] != '\n'))
 				count++;
 		}
 		return count;
@@ -245,9 +252,11 @@ public static class CommandLine
 		int start = 0;
 		for (int p = 0; p < text.Length; p++)
 		{
-			if (text[p] == '\n')
+			if (text[p] == '\n' || text[p] == '\r')
 			{
 				Console.WriteLine("{}{}", prefix, text.Substring(start, p - start));
+				if (text[p] == '\r' && p + 1 < text.Length && text[p + 1] == '\n')
+					p++;
 				start = p + 1;
 			}
 		}

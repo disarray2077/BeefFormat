@@ -53,6 +53,8 @@ public class Formatter
 	{
 		for (int p = position; p < mSource.Length; p++)
 		{
+			if (mSource[p] == '\r')
+				return p + 1 < mSource.Length && mSource[p + 1] == '\n' ? "\r\n" : "\r";
 			if (mSource[p] == '\n')
 				return p > 0 && mSource[p - 1] == '\r' ? "\r\n" : "\n";
 		}
@@ -60,9 +62,17 @@ public class Formatter
 		{
 			if (mSource[p] == '\n')
 				return p > 0 && mSource[p - 1] == '\r' ? "\r\n" : "\n";
+			if (mSource[p] == '\r')
+				return "\r";
 		}
 		return "\n";
 	}
+
+	bool LineBreakAt(int position)
+		=> mSource[position] == '\n' || mSource[position] == '\r' && (position + 1 == mSource.Length || mSource[position + 1] != '\n');
+
+	bool HasLineBreak(StringView text)
+		=> text.Contains('\n') || text.Contains('\r');
 
 	void Add(int start, int end, StringView text, StringView rule)
 	{
@@ -126,7 +136,7 @@ public class Formatter
 	}
 
 	bool SingleLine(int open, int close)
-		=> !mSource.Substring(mTokens[open].End, mTokens[open + 1].Start - mTokens[open].End).Contains('\n') || !mSource.Substring(mTokens[close - 1].End, mTokens[close].Start - mTokens[close - 1].End).Contains('\n');
+		=> !HasLineBreak(mSource.Substring(mTokens[open].End, mTokens[open + 1].Start - mTokens[open].End)) || !HasLineBreak(mSource.Substring(mTokens[close - 1].End, mTokens[close].Start - mTokens[close - 1].End));
 
 	void BlockGaps(int open, int close, int depth, bool expand)
 	{
@@ -156,7 +166,7 @@ public class Formatter
 		int last = -1;
 		for (int p = start; p < end; p++)
 		{
-			if (mSource[p] == '\n')
+			if (LineBreakAt(p))
 			{
 				if (first < 0)
 					first = p;
@@ -168,7 +178,7 @@ public class Formatter
 	}
 
 	// Declarations are scanned at their own delimiter depth, never inside expressions.
-	void Declarations(int start, int end, int depth)
+	void Declarations(int start, int end, int depth, bool expand = false)
 	{
 		if (!Enter())
 			return;
@@ -194,6 +204,8 @@ public class Formatter
 					method = !initializer && i > header && (Kind(i - 1) == .Identifier || Kind(i - 1) == .RArrow || Has(header, i, .Operator));
 				if (kind == .Semi)
 				{
+					if (initializer)
+						Lambdas(header, i, depth);
 					i++;
 					break;
 				}
@@ -214,7 +226,7 @@ public class Formatter
 					int close = mPairs[i];
 					if (Has(header, i, .Enum) || initializer)
 					{
-						Lambdas(i + 1, close, depth + 1);
+						Lambdas(header, close + 1, depth);
 						i = close + 1;
 						if (Kind(i) == .Semi)
 							i++;
@@ -222,8 +234,9 @@ public class Formatter
 					}
 					if (type)
 					{
-						BlockGaps(i, close, depth, SingleLine(i, close));
-						Declarations(i + 1, close, depth + 1);
+						bool inlineBody = SingleLine(i, close);
+						BlockGaps(i, close, depth, inlineBody);
+						Declarations(i + 1, close, depth + 1, inlineBody);
 					}
 					else if (method || Has(header, i, .Tilde))
 						Statements(i, close, depth);
@@ -234,6 +247,8 @@ public class Formatter
 				}
 				i = Skip(i);
 			}
+			if (expand && i < end)
+				Gap(i - 1, i, depth, true, "BF001");
 		}
 	}
 
@@ -285,13 +300,23 @@ public class Formatter
 		{
 			for (int i = arrow; i < semi; i++)
 			{
-				if (mSource.Substring(mTokens[i].End, mTokens[i + 1].Start - mTokens[i].End).Contains('\n'))
+				if (Kind(i) == .Bind && Kind(i + 1) == .LCurly)
+				{
+					i = mPairs[i + 1];
+					continue;
+				}
+				if (Kind(i) == .LCurly)
+				{
+					i = mPairs[i];
+					continue;
+				}
+				if (HasLineBreak(mSource.Substring(mTokens[i].End, mTokens[i + 1].Start - mTokens[i].End)))
 					Gap(i, i + 1, 0, false, "BF006");
 			}
 		}
 		else
 			Gap(arrow, arrow + 1, 0, false, "BF003");
-		Lambdas(arrow + 1, semi, depth + 1);
+		Lambdas(arrow + 1, semi, method ? depth + 1 : depth);
 	}
 
 	bool CanUseStatement(int start, int end)
@@ -348,7 +373,7 @@ public class Formatter
 	bool Control(int i)
 		=> Kind(i) == .If || Kind(i) == .While || Kind(i) == .For || Kind(i) == .Foreach || Kind(i) == .Using || Kind(i) == .Switch;
 
-	void Statements(int open, int close, int depth)
+	void Statements(int open, int close, int depth, bool normalize = false)
 	{
 		if (!Enter())
 			return;
@@ -356,12 +381,12 @@ public class Formatter
 		{
 			mRecursion--;
 		}
-		bool expand = SingleLine(open, close);
+		bool expand = normalize || SingleLine(open, close);
 		BlockGaps(open, close, depth, expand);
 		int i = open + 1;
 		while (i < close && !mFailed)
 		{
-			int next = Statement(i, close, depth + 1);
+			int next = Statement(i, close, depth + 1, expand);
 			if (next <= i)
 			{
 				Fail("unsupported statement boundary");
@@ -373,7 +398,7 @@ public class Formatter
 		}
 	}
 
-	int Statement(int start, int end, int depth)
+	int Statement(int start, int end, int depth, bool normalize = false)
 	{
 		if (!Enter())
 			return end;
@@ -383,7 +408,7 @@ public class Formatter
 		}
 		if (Kind(start) == .LCurly)
 		{
-			Statements(start, mPairs[start], depth);
+			Statements(start, mPairs[start], depth, normalize);
 			return mPairs[start] + 1;
 		}
 		if (Control(start))
@@ -396,7 +421,7 @@ public class Formatter
 			int body = mPairs[start + 1] + 1;
 			// Constant conditions and literal-only leaves have no declarations,
 			// references, allocations, defers, or user-defined operations.
-			if (Control(body))
+			if (TreeNeedsBraces(start, end))
 			{
 				int safeEnd = SafeTree(start, end, 0);
 				if (safeEnd > start && PlainRange(start, safeEnd))
@@ -407,24 +432,50 @@ public class Formatter
 					return safeEnd;
 				}
 			}
-			int next = Statement(body, end, depth + (Kind(body) == .LCurly ? 0 : 1));
+			if (normalize && Kind(body) != .LCurly)
+				Gap(body - 1, body, depth + 1, true, "BF001");
+			int next = Statement(body, end, depth + (Kind(body) == .LCurly ? 0 : 1), normalize);
 			if (Kind(start) == .If && Kind(next) == .Else)
-				next = Statement(next + 1, end, depth + (Kind(next + 1) == .LCurly ? 0 : 1));
+			{
+				if (normalize)
+					Gap(next - 1, next, depth, true, "BF001");
+				if (normalize && Kind(next + 1) != .LCurly)
+					Gap(next, next + 1, depth + 1, true, "BF001");
+				next = Statement(next + 1, end, depth + (Kind(next + 1) == .LCurly ? 0 : 1), normalize);
+			}
 			return next;
 		}
-		if (Kind(start) == .Repeat || Kind(start) == .Do || Kind(start) == .Defer)
+		if (Kind(start) == .Repeat)
+		{
+			int next = Statement(start + 1, end, depth + (Kind(start + 1) == .LCurly ? 0 : 1), normalize);
+			if (Kind(next) != .While || Kind(next + 1) != .LParen)
+			{
+				Fail("unsupported repeat statement boundary");
+				return end;
+			}
+			next = mPairs[next + 1] + 1;
+			return Kind(next) == .Semi ? next + 1 : next;
+		}
+		if (Kind(start) == .Do || Kind(start) == .Defer)
 		{
 			if (Kind(start + 1) == .LCurly)
 			{
-				int next = Statement(start + 1, end, depth);
-				if (Kind(start) == .Repeat && Kind(next) == .While && Kind(next + 1) == .LParen)
-					return mPairs[next + 1] + 2;
+				int next = Statement(start + 1, end, depth, normalize);
 				return next;
 			}
 		}
 		int semi = ExpressionEnd(start, end);
 		Lambdas(start, semi, depth);
 		return semi < end ? semi + 1 : end;
+	}
+
+	bool TreeNeedsBraces(int start, int end)
+	{
+		int body = mPairs[start + 1] + 1;
+		if (Control(body))
+			return true;
+		int next = SafeTree(body, end, 0);
+		return Kind(start) == .If && next >= 0 && Kind(next) == .Else && Control(next + 1);
 	}
 
 	bool PlainRange(int start, int end)
@@ -529,7 +580,7 @@ public class Formatter
 		{
 			if (Kind(i) == .Bind && Kind(i + 1) == .LCurly)
 			{
-				Statements(i + 1, mPairs[i + 1], depth);
+				Statements(i + 1, mPairs[i + 1], depth, true);
 				i = mPairs[i + 1];
 			}
 		}
@@ -544,6 +595,12 @@ public class Formatter
 		mFailed = false;
 		mRecursion = 0;
 		mSource = source;
+		bool success = false;
+		defer
+		{
+			if (!success)
+				ClearAndDeleteItems(Edits);
+		}
 		let all = scope List<SourceToken>();
 		let lexer = scope Lexer(source, false);
 		if (lexer.GetSourceTokens(all) case .Err)
@@ -553,19 +610,26 @@ public class Formatter
 		}
 		if (!Directives(all))
 			return .Err;
-		let masked = scope String(source);
+		let branches = scope List<ConditionalBranch>();
+		defer ClearAndDeleteItems(branches);
+		Try!(ConditionalBranches.Expand(source, all, branches, Error));
+		for (let branch in branches)
+			Try!(AnalyzeBranch(branch));
+		CollapseBlankLines(all);
+		if (mFailed)
+			return .Err;
+		Edits.Sort(scope (a, b) => a.Start <=> b.Start);
+		success = true;
+		return .Ok;
+	}
+
+	Result<void> AnalyzeBranch(ConditionalBranch branch)
+	{
+		mTokens.Clear();
+		mPairs.Clear();
 		let stack = scope List<int>();
-		for (let token in all)
+		for (let token in branch.Tokens)
 		{
-			if (token.IsTrivia)
-			{
-				for (int p = token.Start; p < token.End; p++)
-				{
-					if (masked[p] != '\n' && masked[p] != '\r')
-						masked[p] = ' ';
-				}
-				continue;
-			}
 			int i = mTokens.Count;
 			mTokens.Add(token);
 			mPairs.Add(-1);
@@ -601,7 +665,7 @@ public class Formatter
 			Error.Set("unclosed delimiter");
 			return .Err;
 		}
-		let parser = scope BeefParser.BeefParser(masked);
+		let parser = scope BeefParser.BeefParser(branch.Text);
 		parser.BreakOnError = false;
 		if (parser.Parse(let root) case .Err)
 		{
@@ -610,10 +674,8 @@ public class Formatter
 		}
 		delete root;
 		Declarations(0, mTokens.Count, 0);
-		CollapseBlankLines(all);
 		if (mFailed)
 			return .Err;
-		Edits.Sort(scope (a, b) => a.Start <=> b.Start);
 		return .Ok;
 	}
 
@@ -707,7 +769,7 @@ public class Formatter
 			int count = 0;
 			for (int p = token.Start; p < token.End; p++)
 			{
-				if (mSource[p] == '\n')
+				if (LineBreakAt(p))
 				{
 					if (first < 0)
 						first = p;
@@ -724,7 +786,7 @@ public class Formatter
 					covered = true;
 			}
 			if (!covered)
-				Add(first + 1, last > 0 && mSource[last - 1] == '\r' ? last - 1 : last, "", "BF005");
+				Add(first + 1, mSource[last] == '\n' && last > 0 && mSource[last - 1] == '\r' ? last - 1 : last, "", "BF005");
 		}
 	}
 
@@ -745,7 +807,7 @@ public class Formatter
 		int line = 1;
 		for (int p = 0; p < position; p++)
 		{
-			if (mSource[p] == '\n')
+			if (LineBreakAt(p))
 				line++;
 		}
 		return line;

@@ -106,7 +106,7 @@ class FormatterTests
 	public static void NestedFlowAndExclusions()
 	{
 		let output = scope String();
-		Format("class C { int F() { if (true) if (false) return 1; else return 2; else return 3; } void G(bool flag) { while (flag) if (flag) break; } void H() { for (;;) while (true) if (false) break; else continue; } }", output);
+		Format("class C { int F() { if (true) if (false) return 1; else return 2; else return 3; } void G(bool flag)\n{\nwhile (flag) if (flag) break;\n}\n void H() { for (;;) while (true) if (false) break; else continue; } }", output);
 		Test.Assert(output.Contains("if (true)\n\t\t{\n\t\t\tif (false)"));
 		Test.Assert(output.Contains("while (flag) if (flag) break;"));
 		Test.Assert(output.Contains("for (;;)\n\t\t{"));
@@ -204,5 +204,70 @@ class FormatterTests
 		Test.Assert(output.Contains("(int x, int y) Pair => (1, 2);"));
 		let formatter = scope Formatter();
 		Test.Assert(formatter.Analyze(scope String("class C { delegate void() Callback { get; set; } }")) case .Err);
+	}
+
+	[Test]
+	public static void ConditionalBranchesCannotCompleteEachOther()
+	{
+		let bad = scope String("class C { void F() {\n#if A\nif (true) return;\n#else\nelse return;\n#endif\n} }");
+		let formatter = scope Formatter();
+		Test.Assert(formatter.Analyze(bad) case .Err);
+		let output = scope String();
+		Format("class C\n{\n#if A\nint A() { return 1; }\n#else\n#if B\nint B() { return 2; }\n#else\nint C() { return 3; }\n#endif\n#endif\nint D() { return 4; }\n}\n", output);
+		for (let value in String[?]("return 1;", "return 2;", "return 3;", "return 4;"))
+			Test.Assert(output.Contains(value));
+	}
+
+	[Test]
+	public static void FieldAndPropertyBlockLambdas()
+	{
+		let output = scope String();
+		Format("class C { Object callback = () => { return; }; Object P => () => { return; }; }", output);
+		Test.Assert(output.Contains("callback = () =>\n\t{\n\t\treturn;\n\t}"));
+		Test.Assert(output.Contains("Object P => () =>\n"));
+		output.Clear();
+		Format("class C { Object callback = Register(() => { return; }); }", output);
+		Test.Assert(output.Contains("Register(() =>\n"));
+	}
+
+	[Test]
+	public static void RepeatAndNestedElseBoundaries()
+	{
+		let output = scope String();
+		Format("class C { void A() { repeat { return; } while (false) while (false) { break; } } int B() { if (true) return 1; else if (false) return 2; else return 3; } }", output);
+		Test.Assert(output.Contains("while (false)\n\t\t{"));
+		Test.Assert(output.Contains("else\n\t\t{\n\t\t\tif (false)"));
+	}
+
+	[Test]
+	public static void InlineDeclarationsSeparateAndErrorsClearEdits()
+	{
+		let output = scope String();
+		Format("class C { int a; int b; int F() { return 1; } int P { get; set; } }", output);
+		Test.Assert(output.Contains("\tint a;\n\tint b;\n\tint F()"));
+		Test.Assert(output.Contains("\n\tint P { get; set; }"));
+		let formatter = scope Formatter();
+		let input = scope String("#if A\nclass C { void F() { return; } }\n#else\nclass C { void F() { else return; } }\n#endif\n");
+		Test.Assert(formatter.Analyze(input) case .Err);
+		Test.Assert(formatter.Edits.IsEmpty);
+	}
+
+	[Test]
+	public static void MultilineLambdasHaveIndentedBodies()
+	{
+		let output = scope String();
+		Format("class C\n{\nObject callback = () =>\n{\nif (true)\n{\nreturn;\n}\n};\n}\n", output);
+		Test.Assert(output.Contains("() =>\n\t{\n\t\tif (true)\n\t\t{\n\t\t\treturn;\n\t\t}\n\t};"));
+	}
+
+	[Test]
+	public static void LoneCarriageReturnsArePreserved()
+	{
+		let output = scope String();
+		Format("class C\r{\r\r#if A\rint F() { return 1; }\r#else\rint F() { return 2; }\r#endif\r\r}\r", output);
+		Test.Assert(!output.Contains('\n'));
+		Test.Assert(output.Contains("#if A\r"));
+		Test.Assert(output.Contains("\t\treturn 1;\r"));
+		Test.Assert(output.EndsWith('\r'));
 	}
 }

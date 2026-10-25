@@ -42,7 +42,7 @@ Invoke-Formatter 0 @('--write', $sample)
 Assert-True ((Get-FileHash -LiteralPath $sample).Hash -eq $after) 'Second write changed input'
 Assert-True (-not [IO.File]::ReadAllText($sample).EndsWith("`n")) 'Added final newline'
 
-foreach ($newline in @("`n", "`r`n")) {
+foreach ($newline in @("`n", "`r`n", "`r")) {
     foreach ($withBom in @($true, $false)) {
         $encodingFile = Join-Path $fixtureRoot 'unicode.bf'
         Write-Utf8 $encodingFile ('class C {' + $newline + ' String s = "ç 日本語"; void F() { return; }' + $newline + '}' + $newline) $withBom
@@ -54,6 +54,8 @@ foreach ($newline in @("`n", "`r`n")) {
         Assert-True ($formatted.EndsWith($newline)) 'Final newline changed'
         if ($newline -eq "`r`n") {
             Assert-True (-not $formatted.Replace("`r`n", '').Contains("`n")) 'Mixed inserted line endings'
+        } elseif ($newline -eq "`r") {
+            Assert-True (-not $formatted.Contains("`n")) 'CR changed to LF'
         } else {
             Assert-True (-not $formatted.Contains("`r")) 'LF changed to CRLF'
         }
@@ -83,6 +85,27 @@ foreach ($badText in @('class C { void F() { return } }', "class C {`n#if A`nvoi
     Invoke-Formatter 2 @('--write', $invalid)
     Assert-True ((Get-FileHash -LiteralPath $invalid).Hash -eq $originalHash) 'Malformed input was written'
 }
+$branchFile = Join-Path $fixtureRoot 'branches.bf'
+Write-Utf8 $branchFile "class C { void F() {`n#if A`nif (true) return;`n#else`nelse return;`n#endif`n} }"
+$branchHash = (Get-FileHash -LiteralPath $branchFile).Hash
+foreach ($mode in @('--check', '--diff', '--write')) {
+    Invoke-Formatter 2 @($mode, $branchFile)
+    Assert-True ((Get-FileHash -LiteralPath $branchFile).Hash -eq $branchHash) 'Invalid branch was written'
+}
+Write-Utf8 $branchFile "class C {`n#if A`nint F() { return 1; }`n#else`nint F() { return 2; }`n#endif`n}"
+Invoke-Formatter 0 @('--write', $branchFile)
+$branchText = [IO.File]::ReadAllText($branchFile)
+Assert-True ($branchText.Contains("#if A`n") -and $branchText.Contains("#else`n") -and $branchText.Contains("#endif`n")) 'Directive changed'
+Assert-True ($branchText.Contains("`t`treturn 1;") -and $branchText.Contains("`t`treturn 2;")) 'Branch was skipped'
+Invoke-Formatter 0 @($branchFile)
+$variants = [Text.StringBuilder]::new()
+for ($i = 0; $i -lt 9; $i++) {
+    [void]$variants.Append("#if FLAG$i`nclass C$i {}`n#endif`n")
+}
+Write-Utf8 $branchFile $variants.ToString()
+$branchHash = (Get-FileHash -LiteralPath $branchFile).Hash
+Invoke-Formatter 2 @('--write', $branchFile)
+Assert-True ((Get-FileHash -LiteralPath $branchFile).Hash -eq $branchHash) 'Variant limit wrote input'
 foreach ($badBytes in @([byte[]](0xFF, 0xFE, 0, 0xD8), [byte[]](0xFF, 0xFE, 0x41), [byte[]](0xFE, 0xFF, 0xDC, 0), [byte[]](0, 0, 0xFE, 0xFF, 0, 0x11, 0, 0), [byte[]](0xC0, 0x80), [byte[]](0xED, 0xA0, 0x80), [byte[]](0xF4, 0x90, 0x80, 0x80), [byte[]](0xE2, 0x28, 0xA1))) {
     [IO.File]::WriteAllBytes($invalid, $badBytes)
     $originalHash = (Get-FileHash -LiteralPath $invalid).Hash
@@ -90,7 +113,7 @@ foreach ($badBytes in @([byte[]](0xFF, 0xFE, 0, 0xD8), [byte[]](0xFF, 0xFE, 0x41
     Assert-True ((Get-FileHash -LiteralPath $invalid).Hash -eq $originalHash) 'Invalid encoding was written'
 }
 $tree = Join-Path $fixtureRoot 'tree'
-foreach ($folder in @('Tests', 'build', 'generated', '.git', 'src')) {
+foreach ($folder in @('Tests', 'build', 'generated', '.git', 'recovery', 'src')) {
     New-Item -ItemType Directory -Force -Path (Join-Path $tree $folder) | Out-Null
     Write-Utf8 (Join-Path $tree "$folder\input.bf") 'class C { void F() { return; } }'
 }
@@ -99,6 +122,7 @@ Assert-True ([IO.File]::ReadAllText((Join-Path $tree 'Tests\input.bf')).Contains
 Assert-True ([IO.File]::ReadAllText((Join-Path $tree 'build\input.bf')).Contains('{ return; }')) 'Build traversed'
 Assert-True ([IO.File]::ReadAllText((Join-Path $tree 'generated\input.bf')).Contains('{ return; }')) 'Generated traversed'
 Assert-True ([IO.File]::ReadAllText((Join-Path $tree '.git\input.bf')).Contains('{ return; }')) 'VCS traversed'
+Assert-True ([IO.File]::ReadAllText((Join-Path $tree 'recovery\input.bf')).Contains('{ return; }')) 'Recovery traversed'
 Invoke-Formatter 1 @('--include-tests', $tree)
 Invoke-Formatter 0 @('--write', '--include-tests', $tree)
 Invoke-Formatter 0 @($tree)
@@ -130,22 +154,29 @@ Write-Utf8 $behaviorSource @'
 using System;
 namespace Behavior;
 class Owner { public ~this() { Program.Destroyed++; } }
+struct Returned { public int Value; public this(int value) { Value = value; } }
 class Program
 {
     public static int Destroyed;
+    static Owner Borrowed;
     static int Value;
     static void Tick() { Value++; }
     static int Result() { Value++; return Value; }
     static void Run() => Tick();
     static void Discard() => Result();
+    static Returned MakeValue() { Value++; return .(7); }
+    static void DiscardValue() => MakeValue();
+    static Owner Borrow() { return Borrowed; }
+    static void DiscardOwner() => Borrow();
     static int Choose() { if (true) if (false) return 1; else return 2; else return 3; }
+    static int ChooseElse() { if (false) return 1; else if (true) return 5; else return 6; }
     static int Loop() { for (;;) while (true) if (false) continue; else return 4; }
-    static void Owned() { let owner = scope Owner(); Run(); Discard(); }
+    static void Owned() { let owner = scope Owner(); Borrowed = owner; Run(); Discard(); DiscardValue(); DiscardOwner(); Borrowed = null; }
     public static int Main()
     {
         Owned();
-        Console.WriteLine("{}:{}:{}:{}", Value, Choose(), Loop(), Destroyed);
-        return Value == 2 && Choose() == 2 && Loop() == 4 && Destroyed == 1 ? 0 : 1;
+        Console.WriteLine("{}:{}:{}:{}:{}", Value, Choose(), ChooseElse(), Loop(), Destroyed);
+        return Value == 3 && Choose() == 2 && ChooseElse() == 5 && Loop() == 4 && Destroyed == 1 ? 0 : 1;
     }
 }
 '@
