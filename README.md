@@ -73,13 +73,18 @@ lines between statements.
 | BF009 | Insert exactly one blank line at declaration boundaries: field group to following callable; either side of a constructor/destructor; between adjacent methods when either has a block body, including BF002 output; and either side of class/struct/interface/extension/enum/typealias/recognized delegate declarations. Applies in member or namespace lists as appropriate, never against enclosing braces or between local statements. Keep consecutive fields and expression-only methods together. Preserve trailing/leading comment attachment and attributes; exclude directive/inactive-code gaps. Takes priority over BF001/BF005. | Separating whitespace only; declaration order, scopes, attributes and initializers remain unchanged. |
 | BF010 | Empty struct with a primary constructor, with only whitespace between its final header token and opening brace and between braces. Replace that whitespace and the two braces with a semicolon. Preserve commented/nonempty bodies and ordinary empty structs. | Both Beef forms declare the same primary constructor and generated fields with no additional members. Before/after compiler/run tests check constructed field values. |
 
-Auto-property accessor lists (`{ get; private set; }`), enum bodies, and object
+Auto-property accessor lists (`{ get; private set; }`), simple enum case-list bodies, and object
 and array initializers are not expanded. Expression lambdas retain expression
 form; block lambdas retain block form and use BF001. No lambda form conversion
 is implemented. Block and expression-bodied local methods are visited for the same method/body
 rules as member methods. Other expression blocks retain their internal layout
 unless an existing rule explicitly recognizes them. These are rule
 exclusions, rather than review findings.
+Verbose enums containing `case` declarations and ordinary members use the same
+declaration, property and statement rules as other type bodies. Generic method
+headers are recognized by their closing `>` token; generic constructors also
+retain constructor-specific member separation.
+
 ## Analysis and preservation limits
 
 * BeefFormat's `Lexer.GetSourceTokens` extension returns a partition of original
@@ -157,7 +162,7 @@ $files = Get-Content .\Tests\BeefFormsRegressionFiles.txt | ForEach-Object { Joi
 .\Tests\Run-Integration.ps1 -RegressionFile $files
 ```
 
-Validated with the installed Beef compiler: Debug and Release builds, 56 formatter
+Validated with the installed Beef compiler: Debug and Release builds, 58 formatter
 tests, all 50 BeefParser tests, and 303 integration assertions including the
 14-file BeefForms regression list (177 without optional files). Both Win32Backend.bf
 and Control.bf have been checked using temporary copies. Body-layout

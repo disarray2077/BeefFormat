@@ -245,6 +245,19 @@ class ExpressionCases : IReset
     void Consume(Owner owner) { Count++; }
     public void Scoped() => Consume(scope Owner());
 }
+enum Direction
+{
+    case North;
+    case South;
+    public bool IsNorth { get => this == .North; }
+    public bool Matches(Direction other) { if (IsNorth) return other == .North; return other == .South; }
+}
+class GenericCallables
+{
+    public int Value;
+    public this<T>(T value) { Value = 7; }
+    public T Identity<T>(T value, bool flag) { if (flag) return value; return value; }
+}
 struct Returned { public int Value; public this(int value) { Value = value; } }
 class Program
 {
@@ -278,6 +291,13 @@ class Program
         if (flag) if (flag) defer:: { LifetimeValue++; }
         return LifetimeValue == 0;
     }
+    static bool ImmediateDeferOrder(bool flag)
+    {
+        int trace = 0;
+        if (flag) if (flag) defer { trace = trace * 10 + 1; }
+        trace = trace * 10 + 2;
+        return trace == 12;
+    }
     static int Section(int kind, bool flag)
     {
         switch (kind)
@@ -301,9 +321,10 @@ class Program
     {
         Pair pair = .(3, 4);
         let pairSize = sizeof(decltype(pair));
+        let generic = scope GenericCallables(3);
         let expressions = scope ExpressionCases();
         expressions.Assign(); expressions.Compound(); expressions.Postfix(); expressions.Prefix(); expressions.Generic<int>(); expressions.RunLocal();
-        bool expressionCorrect = pairSize > 0 && expressions.Count == 10 && expressions.Enabled && (3).Increased(amount: 2) == 5;
+        bool expressionCorrect = generic.Value == 7 && generic.Identity(9, true) == 9 && generic.Identity(8, false) == 8 && Direction.North.Matches(.North) && Direction.South.Matches(.South) && ImmediateDeferOrder(true) && pairSize > 0 && expressions.Count == 10 && expressions.Enabled && (3).Increased(amount: 2) == 5;
         ((IReset)expressions).Reset();
         expressionCorrect &= expressions.Count == 5;
         expressions.NullConditional(null); expressions.NullConditional(other: expressions); expressions.Scoped();

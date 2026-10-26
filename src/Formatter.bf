@@ -230,7 +230,7 @@ public class Formatter
 	{
 		for (int i = start; i < end; i = Skip(i))
 		{
-			if (Kind(i) == .Delegate || Kind(i) == .Function || Kind(i) == .TypeAlias || Kind(i) == .Using || Kind(i) == .Enum || Kind(i) == .Mixin)
+			if (Kind(i) == .Delegate || Kind(i) == .Function || Kind(i) == .TypeAlias || Kind(i) == .Using || Kind(i) == .Enum || Kind(i) == .Mixin || Kind(i) == .Case)
 				return false;
 		}
 		return true;
@@ -320,6 +320,7 @@ public class Formatter
 		{
 			int header = i;
 			bool type = false;
+			bool enumDeclaration = false;
 			bool method = false;
 			bool initializer = false;
 			bool field = false;
@@ -329,6 +330,8 @@ public class Formatter
 			while (i < end)
 			{
 				let kind = Kind(i);
+				if (!type && !method && !initializer && kind == .Enum)
+					enumDeclaration = true;
 				if (kind == .Static && Kind(i + 1) == .LCurly)
 					type = true;
 				if (!method && !initializer && (kind == .Class || kind == .Struct || kind == .Interface || kind == .Namespace || kind == .Extension || kind == .Enum || kind == .TypeAlias))
@@ -342,7 +345,8 @@ public class Formatter
 						type = true;
 					else if (Has(header, i, .Delegate) || Has(header, i, .Function))
 						method = i > header && Kind(i - 1) == .Identifier && Kind(i - 2) == .RParen;
-					constructor = !type && method && Raw(i - 1) == "this";
+					int name = CallableNameBefore(i, header);
+					constructor = !type && method && name >= header && Kind(name) == .Identifier && Raw(name) == "this";
 				}
 				if (kind == .Semi)
 				{
@@ -371,7 +375,8 @@ public class Formatter
 				if (kind == .LCurly)
 				{
 					int close = mPairs[i];
-					if (Has(header, i, .Enum) || initializer)
+					bool simpleEnum = enumDeclaration && (close == i + 1 || Kind(i + 1) == .Identifier && (Kind(i + 2) == .Assign || Kind(i + 2) == .Comma || Kind(i + 2) == .RCurly));
+					if (simpleEnum || initializer)
 					{
 						Lambdas(header, close + 1, depth);
 						i = close + 1;
