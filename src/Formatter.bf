@@ -23,14 +23,23 @@ public class SourceEdit
 
 public class Formatter
 {
-	struct ClosingBrace
+	struct ClosingBrace : IHashable
 	{
 		public int Position;
 		public int Depth;
 		public StringView Rule;
+
+		public int GetHashCode()
+			=> Position ^ Depth ^ Rule.GetHashCode();
+
+		public static bool operator==(ClosingBrace a, ClosingBrace b)
+			=> a.Position == b.Position && a.Depth == b.Depth && a.Rule == b.Rule;
 	}
 
 	List<ClosingBrace> mClosingBraces = new .() ~ delete _;
+	HashSet<ClosingBrace> mClosingKeys = new .() ~ delete _;
+	Dictionary<int, SourceEdit> mEditsByStart = new .() ~ delete _;
+	List<int> mLineBreaks = new .() ~ delete _;
 	String mSource;
 	List<SourceToken> mTokens = new .() ~ delete _;
 	List<int> mPairs = new .() ~ delete _;
@@ -68,21 +77,39 @@ public class Formatter
 
 	StringView Newline(int position)
 	{
-		for (int p = position; p < mSource.Length; p++)
+		if (mLineBreaks.IsEmpty)
+			return "\n";
+		int index = LineBreakIndex(position);
+		let p = mLineBreaks[Math.Min(index, mLineBreaks.Count - 1)];
+		return mSource[p] == '\r' ? "\r" : p > 0 && mSource[p - 1] == '\r' ? "\r\n" : "\n";
+	}
+
+	int LineBreakIndex(int position)
+	{
+		int low = 0, high = mLineBreaks.Count;
+		while (low < high)
 		{
-			if (mSource[p] == '\r')
-				return p + 1 < mSource.Length && mSource[p + 1] == '\n' ? "\r\n" : "\r";
-			if (mSource[p] == '\n')
-				return p > 0 && mSource[p - 1] == '\r' ? "\r\n" : "\n";
+			int middle = low + (high - low) / 2;
+			if (mLineBreaks[middle] < position)
+				low = middle + 1;
+			else
+				high = middle;
 		}
-		for (int p = position - 1; p >= 0; p--)
+		return low;
+	}
+
+	int SourceTokenAfter(int position)
+	{
+		int low = 0, high = mSourceTokens.Count;
+		while (low < high)
 		{
-			if (mSource[p] == '\n')
-				return p > 0 && mSource[p - 1] == '\r' ? "\r\n" : "\n";
-			if (mSource[p] == '\r')
-				return "\r";
+			int middle = low + (high - low) / 2;
+			if (mSourceTokens[middle].End <= position)
+				low = middle + 1;
+			else
+				high = middle;
 		}
-		return "\n";
+		return low;
 	}
 
 	bool LineBreakAt(int position)
@@ -95,18 +122,29 @@ public class Formatter
 	{
 		if (mSource.Substring(start, end - start) == text)
 			return;
-		for (let edit in Edits)
+		if (mEditsByStart.TryGetValue(start, let edit))
 		{
 			if (edit.Start == start && edit.End == end && edit.Text == text)
 				return;
-			if (start < edit.End && end > edit.Start || start == edit.Start)
+			Fail("conflicting formatting edits");
+			return;
+		}
+		let added = new SourceEdit(start, end, text, rule);
+		Edits.Add(added);
+		mEditsByStart.Add(start, added);
+	}
+
+	void ValidateEdits()
+	{
+		Edits.Sort(scope (a, b) => a.Start <=> b.Start);
+		for (int i = 1; i < Edits.Count; i++)
+		{
+			if (Edits[i - 1].End > Edits[i].Start)
 			{
-				mFailed = true;
-				Error.Set("conflicting formatting edits");
+				Fail("conflicting formatting edits");
 				return;
 			}
 		}
-		Edits.Add(new .(start, end, text, rule));
 	}
 
 	void Gap(int left, int right, int indent, bool line, StringView rule)
@@ -135,8 +173,9 @@ public class Formatter
 			return;
 		int start = mTokens[left].End;
 		int end = mTokens[right].Start;
-		for (let token in mSourceTokens)
+		for (int index = SourceTokenAfter(start); index < mSourceTokens.Count; index++)
 		{
+			let token = mSourceTokens[index];
 			if (token.End <= start)
 				continue;
 			if (token.Start >= end)
@@ -164,8 +203,9 @@ public class Formatter
 	{
 		int start = mTokens[left].End;
 		int end = mTokens[right].Start;
-		for (let token in mSourceTokens)
+		for (int index = SourceTokenAfter(start); index < mSourceTokens.Count; index++)
 		{
+			let token = mSourceTokens[index];
 			if (token.End <= start)
 				continue;
 			if (token.Start >= end)
@@ -175,8 +215,9 @@ public class Formatter
 		}
 		// Same-line comments stay with the previous member. Own-line comments remain
 		// attached to the following member, after the separator.
-		for (let token in mSourceTokens)
+		for (int index = SourceTokenAfter(start); index < mSourceTokens.Count; index++)
 		{
+			let token = mSourceTokens[index];
 			if (token.End <= start)
 				continue;
 			if (token.Start >= end)
@@ -768,9 +809,14 @@ public class Formatter
 		int boundary = wrap ? StatementEnd(body, end) : body;
 		if (wrap)
 		{
-			for (let token in mSourceTokens)
+			int first = mTokens[body - 1].End;
+			int last = mTokens[boundary - 1].End;
+			for (int index = SourceTokenAfter(first); index < mSourceTokens.Count; index++)
 			{
-				if (token.Start >= mTokens[body - 1].End && token.Start < mTokens[boundary - 1].End && token.IsDirective)
+				let token = mSourceTokens[index];
+				if (token.Start >= last)
+					break;
+				if (token.IsDirective)
 					wrap = false;
 			}
 		}
@@ -787,19 +833,16 @@ public class Formatter
 	void QueueClosing(int position, int depth, StringView rule)
 	{
 		let brace = ClosingBrace() { Position = ClosingPosition(position), Depth = depth, Rule = rule };
-		for (let previous in mClosingBraces)
-		{
-			if (previous.Position == brace.Position && previous.Depth == brace.Depth && previous.Rule == rule)
-				return;
-		}
-		mClosingBraces.Add(brace);
+		if (mClosingKeys.Add(brace))
+			mClosingBraces.Add(brace);
 	}
 
 	int ClosingPosition(int position)
 	{
 		var position;
-		for (let token in mSourceTokens)
+		for (int index = SourceTokenAfter(position); index < mSourceTokens.Count; index++)
 		{
+			let token = mSourceTokens[index];
 			if (token.End <= position)
 				continue;
 			if (!token.IsTrivia || token.IsDirective)
@@ -830,18 +873,12 @@ public class Formatter
 				closing.Append('}');
 				i++;
 			}
-			bool merged = false;
-			for (let edit in Edits)
+			if (mEditsByStart.TryGetValue(position, let edit))
 			{
-				if (edit.Start == position)
-				{
-					edit.Text.Insert(0, closing);
-					edit.Rule = rule;
-					merged = true;
-					break;
-				}
+				edit.Text.Insert(0, closing);
+				edit.Rule = rule;
 			}
-			if (!merged)
+			else
 				Add(position, position, closing, rule);
 		}
 	}
@@ -979,17 +1016,28 @@ public class Formatter
 	{
 		mTokens.Clear();
 		mPairs.Clear();
+		mEditsByStart.Clear();
 		ClearAndDeleteItems(Edits);
 		Error.Clear();
 		mFailed = false;
 		mRecursion = 0;
 		mClosingBraces.Clear();
+		mClosingKeys.Clear();
 		mSource = source;
+		mLineBreaks.Clear();
+		for (int p = 0; p < mSource.Length; p++)
+		{
+			if (LineBreakAt(p))
+				mLineBreaks.Add(p);
+		}
 		bool success = false;
 		defer
 		{
 			if (!success)
+			{
+				mEditsByStart.Clear();
 				ClearAndDeleteItems(Edits);
+			}
 		}
 		let all = mSourceTokens;
 		all.Clear();
@@ -1006,11 +1054,16 @@ public class Formatter
 		Try!(ConditionalBranches.Expand(source, all, branches, Error));
 		for (let branch in branches)
 			Try!(AnalyzeBranch(branch));
+		ValidateEdits();
+		if (mFailed)
+			return .Err;
 		CollapseBlankLines(all);
 		CloseBodies();
 		if (mFailed)
 			return .Err;
-		Edits.Sort(scope (a, b) => a.Start <=> b.Start);
+		ValidateEdits();
+		if (mFailed)
+			return .Err;
 		success = true;
 		return .Ok;
 	}
@@ -1161,6 +1214,8 @@ public class Formatter
 
 	void CollapseBlankLines(List<SourceToken> all)
 	{
+		// Only the sorted prefix contains pre-existing edits; cleanup spans are disjoint.
+		let existingCount = Edits.Count;
 		for (let token in all)
 		{
 			if (!token.IsTrivia || !OnlySpace(token.Start, token.End))
@@ -1180,15 +1235,30 @@ public class Formatter
 			}
 			if (count < 3)
 				continue;
-			bool covered = false;
-			for (let edit in Edits)
-			{
-				if (edit.Start < token.End && edit.End > token.Start)
-					covered = true;
-			}
-			if (!covered)
+			if (!EditIntersects(token.Start, token.End, existingCount))
 				Add(first + 1, mSource[last] == '\n' && last > 0 && mSource[last - 1] == '\r' ? last - 1 : last, "", "BF005");
 		}
+	}
+
+	bool EditIntersects(int start, int end, int count)
+	{
+		int low = 0, high = count;
+		while (low < high)
+		{
+			int middle = low + (high - low) / 2;
+			if (Edits[middle].Start < start)
+				low = middle + 1;
+			else
+				high = middle;
+		}
+		if (low > 0 && Edits[low - 1].End > start)
+			return true;
+		for (int i = low; i < count && Edits[i].Start < end; i++)
+		{
+			if (Edits[i].End > start)
+				return true;
+		}
+		return false;
 	}
 
 	public void Apply(String output)
@@ -1204,13 +1274,5 @@ public class Formatter
 	}
 
 	public int LineAt(int position)
-	{
-		int line = 1;
-		for (int p = 0; p < position; p++)
-		{
-			if (LineBreakAt(p))
-				line++;
-		}
-		return line;
-	}
+		=> LineBreakIndex(position) + 1;
 }

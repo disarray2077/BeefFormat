@@ -87,6 +87,10 @@ retain constructor-specific member separation.
 
 ## Analysis and preservation limits
 
+* Source-token and line-ending positions use binary-search indexes. Edit starts
+  and queued closing braces use hash indexes for duplicate/merge lookup; sorted
+  validation passes reject overlaps. Blank-line cleanup checks the sorted edit
+  prefix instead of scanning all edits for every whitespace span.
 * BeefFormat's `Lexer.GetSourceTokens` extension returns a partition of original
   UTF-8 byte ranges, including trivia. It reuses the existing token lexer and
   consumes comments/directives before delegating token recognition. It handles
@@ -162,9 +166,15 @@ $files = Get-Content .\Tests\BeefFormsRegressionFiles.txt | ForEach-Object { Joi
 .\Tests\Run-Integration.ps1 -RegressionFile $files
 ```
 
-Validated with the installed Beef compiler: Debug and Release builds, 58 formatter
+Validated with the installed Beef compiler: Debug and Release builds, 60 formatter
 tests, all 50 BeefParser tests, and 303 integration assertions including the
 14-file BeefForms regression list (177 without optional files). Both Win32Backend.bf
 and Control.bf have been checked using temporary copies. Body-layout
 tests verify unchanged dangling-else binding, empty switch sections, nested case
 blocks, loop targets, and scoped destruction by compiling/running before and after.
+
+`Tests/Measure-Scaling.ps1` reports median formatting times for generated sources
+of increasing sizes, using temporary files and checking idempotence. A Debug
+comparison on the same 2,000-method input measured about 3.0 seconds before the
+index changes and 0.13 seconds after; 4,000 methods took 0.22 seconds afterward.
+These measurements include process startup and the CLI's validation pass.
