@@ -1014,6 +1014,7 @@ public class Formatter
 	{
 		mTokens.Clear();
 		mPairs.Clear();
+
 		let stack = scope List<int>();
 		for (let token in branch.Tokens)
 		{
@@ -1047,11 +1048,13 @@ public class Formatter
 				mPairs[i] = open;
 			}
 		}
+
 		if (!stack.IsEmpty)
 		{
 			Error.Set("unclosed delimiter");
 			return .Err;
 		}
+
 		let parser = scope BeefParser.BeefParser(branch.Text);
 		parser.BreakOnError = false;
 		if (parser.Parse(let root) case .Err)
@@ -1060,10 +1063,16 @@ public class Formatter
 			return .Err;
 		}
 		delete root;
+
+		// BeefParser validates syntax, but its AST lacks the exact source spans and
+		// token boundaries needed for edits. The statement/declaration scanner below
+		// locates those boundaries in the original source-token stream so edits retain
+		// comments, whitespace and literals. Once AST nodes expose reliable spans,
+		// use them to locate edits instead of maintaining duplicate syntax handling;
+		// source preservation does not require regenerating code from the AST.
 		Declarations(0, mTokens.Count, 0);
-		if (mFailed)
-			return .Err;
-		return .Ok;
+
+		return mFailed ? .Err : .Ok;
 	}
 
 	bool Boundary(TokenType previous)
