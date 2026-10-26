@@ -821,6 +821,21 @@ public class Formatter
 				body += 2;
 			else if (Kind(start) == .Defer && Kind(body) == .DoubleColon)
 				body++;
+			if (Kind(start) == .Defer && Kind(body) != .LCurly && !Flow(body))
+			{
+				int semi = ExpressionEnd(body, end);
+				Gap(body - 1, body, depth, false, "BF007");
+				// Join expression continuations, retaining comments, directives and block interiors.
+				bool hasBlock = Has(body, semi, .LCurly);
+				for (int token = body; token < semi && !hasBlock; token++)
+				{
+					int next = token + 1;
+					if (next <= semi && HasLineBreak(mSource.Substring(mTokens[next - 1].End, mTokens[next].Start - mTokens[next - 1].End)))
+						Gap(next - 1, next, depth, false, "BF007");
+				}
+				Lambdas(body, semi, depth);
+				return semi < end ? semi + 1 : end;
+			}
 			if (Kind(start) == .Defer && Kind(body) == .LCurly && SingleDeferStatement(body, mPairs[body]))
 			{
 				QueueIndent(body, depth);

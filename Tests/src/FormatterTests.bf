@@ -9,6 +9,27 @@ namespace BeefFormat.Tests;
 class FormatterTests
 {
 	[Test]
+	public static void ExpressionDefersStayOnOneLine()
+	{
+		let output = scope String();
+		Format("class C { void F() { defer SDL.DelEventWatch(=> WatchWindowEvents, Internal.UnsafeCastToPtr(this)); defer\n Release(\n value\n ); defer::\n Tick(); defer:mixin\n delete items; } }", output);
+		Test.Assert(output.Contains("defer SDL.DelEventWatch(=> WatchWindowEvents, Internal.UnsafeCastToPtr(this));"), output);
+		Test.Assert(output.Contains("defer Release( value );"));
+		Test.Assert(output.Contains("defer:: Tick();"));
+		Test.Assert(output.Contains("defer:mixin delete items;"));
+	}
+
+	[Test]
+	public static void ExpressionDefersPreserveProtectedTextAndLambdaBlocks()
+	{
+		let output = scope String();
+		Format("class C\r\n{\r\n\tvoid F()\r\n\t{\r\n\t\tdefer // keep\r\n Release();\r\n\t\tdefer Call(\"\"\"\r\n literal\r\n \"\"\");\r\n\t\tdefer Call(() => { Tick(); Tock(); });\r\n\t}\r\n}\r\n", output);
+		Test.Assert(output.Contains("defer // keep\r\n Release();"), output);
+		Test.Assert(output.Contains("\"\"\"\r\n literal\r\n \"\"\""));
+		Test.Assert(output.Contains("defer Call(() =>\r\n\t\t{\r\n\t\t\tTick();\r\n\t\t\tTock();\r\n\t\t});"));
+	}
+
+	[Test]
 	public static void VoidExpressionFormsBecomeBlocks()
 	{
 		String[?] expressions = .("NeedsPaint = false", "count += 2", "count++", "++count", "this.Tick()", "value?.Tick()", "Tick<int>()", "Tick(ref count)", "Tick(scope Owner())", "value = new Owner()", "callback = => Handler");
@@ -452,7 +473,7 @@ class FormatterTests
 		Test.Assert(output.Contains("using (Enter())\n\t\t\tLog(4);"));
 		Test.Assert(output.Contains("repeat\n\t\t\tLog(5);\n\t\twhile (flag)"));
 		Test.Assert(output.Contains("do\n\t\t\tLog(6);"));
-		Test.Assert(output.Contains("defer\n\t\t\tLog(7);"));
+		Test.Assert(output.Contains("defer Log(7);"));
 		Test.Assert(output.Contains("while (flag)\n\t\t\t;"));
 	}
 
