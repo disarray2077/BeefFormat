@@ -38,7 +38,7 @@ class ReviewRegressionTests
 		let simple = scope String("enum Direction { North, South }");
 		let preserved = scope String();
 		Format(simple, preserved);
-		Test.Assert(preserved == simple);
+		Test.Assert(preserved == "enum Direction\n{\n\tNorth,\n\tSouth\n}", preserved);
 	}
 
 	[Test]

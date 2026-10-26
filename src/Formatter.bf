@@ -413,6 +413,28 @@ public class Formatter
 			Add(first + 1, last + 1, "", "BF005");
 	}
 
+	void EnumBody(int open, int close, int depth)
+	{
+		// Outer angle tokens can be operators or generic delimiters. Preserve
+		// these lists until their expression boundaries can be resolved exactly.
+		for (int i = open + 1; i < close; i = Skip(i))
+		{
+			if (Kind(i) == .LArrow || Kind(i) == .RArrow)
+				return;
+		}
+		QueueIndent(open, depth);
+		QueueIndent(close, depth);
+		BodyGap(open - 1, open, depth, "BF012");
+		if (open + 1 < close)
+			BodyGap(open, open + 1, depth + 1, "BF012");
+		for (int i = open + 1; i < close; i = Skip(i))
+		{
+			if (Kind(i) == .Comma && i + 1 < close)
+				BodyGap(i, i + 1, depth + 1, "BF012");
+		}
+		BodyGap(close - 1, close, depth, "BF012");
+	}
+
 	// Declarations are scanned at their own delimiter depth, never inside expressions.
 	void Declarations(int start, int end, int depth, bool expand = false, bool members = false)
 	{
@@ -518,6 +540,8 @@ public class Formatter
 					bool simpleEnum = enumDeclaration && (close == i + 1 || Kind(i + 1) == .Identifier && (Kind(i + 2) == .Assign || Kind(i + 2) == .Comma || Kind(i + 2) == .RCurly));
 					if (simpleEnum || initializer)
 					{
+						if (simpleEnum)
+							EnumBody(i, close, depth);
 						Lambdas(header, close + 1, depth);
 						i = close + 1;
 						if (initializer)

@@ -129,7 +129,7 @@ class FormatterTests
 		let output = scope String();
 		Format("namespace N { class A {} struct B : this(int X) {} enum E { A, B } class C {} }", output);
 		Test.Assert(output.Contains("class A\n\t{\n\t}\n\n\tstruct B : this(int X);\n\n\tenum E"), output);
-		Test.Assert(output.Contains("enum E { A, B }\n\n\tclass C"), output);
+		Test.Assert(output.Contains("enum E\n\t{\n\t\tA,\n\t\tB\n\t}\n\n\tclass C"), output);
 	}
 
 	[Test]
