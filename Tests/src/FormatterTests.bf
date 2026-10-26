@@ -339,8 +339,9 @@ class FormatterTests
 		Format("class C\n{\n\t(int x, int y) Auto { get; set; }\n\t(int x, int y) Pair\n\t\t=> (1, 2);\n}\n", output);
 		Test.Assert(output.Contains("(int x, int y) Auto { get; set; }"));
 		Test.Assert(output.Contains("(int x, int y) Pair => (1, 2);"));
-		let formatter = scope Formatter();
-		Test.Assert(formatter.Analyze(scope String("class C { delegate void() Callback { get; set; } }")) case .Err);
+		let callback = scope String();
+		Format("class C { delegate void() Callback { get; set; } }", callback);
+		Test.Assert(callback.Contains("delegate void() Callback { get; set; }"));
 	}
 
 	[Test]

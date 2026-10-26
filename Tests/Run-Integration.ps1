@@ -1,6 +1,6 @@
 param(
     [string]$Compiler = 'C:\Program Files\BeefLang\bin\BeefBuild.exe',
-    [string]$RegressionFile
+    [string[]]$RegressionFile
 )
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot -Parent
@@ -145,7 +145,7 @@ foreach ($encoding in @([Text.UnicodeEncoding]::new($false, $true, $true), [Text
     Assert-True ([Convert]::ToHexString($roundtrip) -eq [Convert]::ToHexString($wideBytes)) 'Wide encoding did not round trip'
     Invoke-Formatter 0 @($wide)
 }
-foreach ($badText in @('class C { void F() { return } }', "class C {`n#if A`nvoid F() {`n#else`n}`n#endif`n}", '/* unterminated', 'struct S : this(int X,) {}', 'class C { Object Value { get; set; } ~ delete _ }')) {
+foreach ($badText in @('class C { void F() { return } }', "class C {`n#if A`nvoid F() {`n#else`n}`n#endif`n}", '/* unterminated', 'struct S : this(int X,) {}', 'class C { Object Value { get; set; } ~ delete _ }', 'class C { bool Value { get; set; } = ; }', 'class C { void F() { Call(error:); } }', 'class C { void F() { let f = scope [&] () =>; } }')) {
     Write-Utf8 $invalid $badText
     $originalHash = (Get-FileHash -LiteralPath $invalid).Hash
     Invoke-Formatter 2 @('--write', $invalid)
@@ -220,6 +220,8 @@ Write-Utf8 $behaviorSource @'
 using System;
 using System.Collections;
 namespace Behavior;
+static { public static int Increased(this int value, int amount) => value + amount; }
+function int IntCallback(int value);
 class Owner { public ~this() { Program.Destroyed++; } }
 class Appended { public append List<int> Values = .(); }
 struct Pair : this(int X, int Y) {}
@@ -231,6 +233,7 @@ interface IReset { void Reset(); }
 class ExpressionCases : IReset
 {
     public int Count;
+    public bool Enabled { get; set; } = true;
     public void Assign() => Count = 1;
     public void Compound() => Count += 2;
     public void Postfix() => Count++;
@@ -297,12 +300,13 @@ class Program
     public static int Main()
     {
         Pair pair = .(3, 4);
+        let pairSize = sizeof(decltype(pair));
         let expressions = scope ExpressionCases();
         expressions.Assign(); expressions.Compound(); expressions.Postfix(); expressions.Prefix(); expressions.Generic<int>(); expressions.RunLocal();
-        bool expressionCorrect = expressions.Count == 10;
+        bool expressionCorrect = pairSize > 0 && expressions.Count == 10 && expressions.Enabled && (3).Increased(amount: 2) == 5;
         ((IReset)expressions).Reset();
         expressionCorrect &= expressions.Count == 5;
-        expressions.NullConditional(null); expressions.NullConditional(expressions); expressions.Scoped();
+        expressions.NullConditional(null); expressions.NullConditional(other: expressions); expressions.Scoped();
         expressionCorrect &= expressions.Count == 2;
         let target = scope Target();
         let node = scope Node();
@@ -314,6 +318,13 @@ class Program
         appended.Values.Add(7);
         function int(int) callback = => Callback;
         let callbackValue = callback(appended.Values[0]);
+        IntCallback typedCallback = => Callback;
+        delegate int(int) heapCallback = new => Callback;
+        defer delete heapCallback;
+        int captured = 0;
+        delegate void() closure = scope [&] () => captured = 7;
+        closure();
+        expressionCorrect &= typedCallback(7) == 14 && heapCallback(7) == 14 && captured == 7 && (char32)'\u{D800}' == (char32)0xD800;
         bool layoutCorrect = Dangling(true, true) == 1 && Dangling(true, false) == 2 && Dangling(false, false) == 3 && Section(0, false) == 10 && Section(1, true) == -1 && Section(2, true) == 20 && Section(2, false) == 30 && Section(3, true) == 40 && Section(3, false) == 50 && Section(4, false) == 60 && Loops() == 4;
         Console.WriteLine("{}:{}:{}:{}:{}:{}:{}", Value, Choose(), ChooseElse(), Loop(), Destroyed, callbackValue, layoutCorrect);
         return (expressionCorrect && nestedCorrect && pair.X == 3 && pair.Y == 4 && Value == 3 && Choose() == 2 && ChooseElse() == 5 && Loop() == 4 && Destroyed == 5 && callbackValue == 14 && layoutCorrect) ? 0 : 1;
@@ -333,10 +344,11 @@ $afterBehavior = (& $behaviorExe | Out-String)
 Assert-True ($LASTEXITCODE -eq 0) 'Formatted behavior fixture failed'
 Assert-True ($beforeBehavior -eq $afterBehavior) 'Behavior or ownership changed'
 Invoke-Formatter 0 @($behaviorSource)
-if ($RegressionFile) {
-    $originalRegressionHash = (Get-FileHash -LiteralPath $RegressionFile).Hash
-    $regressionCopy = Join-Path $fixtureRoot 'regression.bf'
-    Copy-Item -LiteralPath $RegressionFile -Destination $regressionCopy
+$regressionIndex = 0
+foreach ($regressionSource in $RegressionFile) {
+    $originalRegressionHash = (Get-FileHash -LiteralPath $regressionSource).Hash
+    $regressionCopy = Join-Path $fixtureRoot ("regression-{0}.bf" -f $regressionIndex++)
+    Copy-Item -LiteralPath $regressionSource -Destination $regressionCopy
     $script:formatterOutput = (& $formatterExe --check $regressionCopy 2>&1 | Out-String)
     $regressionExit = $LASTEXITCODE
     Assert-True ($regressionExit -eq 0 -or $regressionExit -eq 1) "Regression input failed: $script:formatterOutput"
@@ -348,6 +360,6 @@ if ($RegressionFile) {
     $formattedRegressionHash = (Get-FileHash -LiteralPath $regressionCopy).Hash
     Invoke-Formatter 0 @('--write', $regressionCopy)
     Assert-True ((Get-FileHash -LiteralPath $regressionCopy).Hash -eq $formattedRegressionHash) 'Regression was not idempotent'
-    Assert-True ((Get-FileHash -LiteralPath $RegressionFile).Hash -eq $originalRegressionHash) 'Original regression source was changed'
+    Assert-True ((Get-FileHash -LiteralPath $regressionSource).Hash -eq $originalRegressionHash) 'Original regression source was changed'
 }
 Write-Host "Passed $script:checks integration assertions. Fixtures: $fixtureRoot"

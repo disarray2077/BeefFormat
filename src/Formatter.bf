@@ -329,6 +329,8 @@ public class Formatter
 			while (i < end)
 			{
 				let kind = Kind(i);
+				if (kind == .Static && Kind(i + 1) == .LCurly)
+					type = true;
 				if (!method && !initializer && (kind == .Class || kind == .Struct || kind == .Interface || kind == .Namespace || kind == .Extension || kind == .Enum || kind == .TypeAlias))
 					type = true;
 				if (kind == .Assign)
@@ -336,8 +338,10 @@ public class Formatter
 				if (kind == .LParen)
 				{
 					method = !initializer && i > header && (Kind(i - 1) == .Identifier || Kind(i - 1) == .RArrow || Has(header, i, .Operator));
-					if (method && Has(header, i, .Delegate))
+					if (method && CallableTypeDeclaration(header, i))
 						type = true;
+					else if (Has(header, i, .Delegate) || Has(header, i, .Function))
+						method = i > header && Kind(i - 1) == .Identifier && Kind(i - 2) == .RParen;
 					constructor = !type && method && Raw(i - 1) == "this";
 				}
 				if (kind == .Semi)
@@ -404,6 +408,13 @@ public class Formatter
 					else
 					{
 						Property(i, close, depth);
+						if (Kind(close + 1) == .Assign)
+						{
+							i = ExpressionEnd(close + 2, end);
+							Lambdas(close + 2, i, depth);
+							i++;
+							break;
+						}
 						if (Kind(close + 1) == .Tilde)
 						{
 							i = Statement(close + 2, end, depth);
@@ -437,6 +448,43 @@ public class Formatter
 				return true;
 		}
 		return false;
+	}
+
+	bool CallableTypeDeclaration(int start, int parameters)
+	{
+		int keyword = -1;
+		for (int i = start; i < parameters; i = Skip(i))
+		{
+			if (Kind(i) == .LParen)
+				return false;
+			if (Kind(i) == .Delegate || Kind(i) == .Function)
+				keyword = i;
+		}
+		if (keyword < 0)
+			return false;
+		int name = CallableNameBefore(parameters, start);
+		return name > keyword + 1 && Kind(name) == .Identifier && Kind(name - 1) != .Dot;
+	}
+
+	int CallableNameBefore(int parameters, int start)
+	{
+		int name = parameters - 1;
+		if (Kind(name) == .RArrow)
+		{
+			int depth = 1;
+			name--;
+			while (name >= start && depth > 0)
+			{
+				if (Kind(name) == .RArrow)
+					depth++;
+				else if (Kind(name) == .LArrow)
+					depth--;
+				name--;
+			}
+			if (depth != 0)
+				return -1;
+		}
+		return name;
 	}
 
 	int ExpressionEnd(int start, int end)

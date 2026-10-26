@@ -13,6 +13,15 @@ It also supports struct primary constructors (`struct S : this(int X) {}`)
 and property finalizers (`{ get; set; } ~ _.Dispose();`). Property finalizers
 remain part of their property declaration; they do not count as a field group
 for BF009. Block finalizers use the ordinary block formatting rules.
+Supported syntax also includes named call arguments, namespace-level `static`
+blocks, extension-method `this` parameters, `function` declarations, delegate
+fields, `implicit void operator+=`/`operator-=` declarations, property initializers,
+allocated method references (`new => Handler`), allocator mixins with inferred
+arrays (`new:ScopedAlloc! .[count]`), and lambda capture lists with default or
+named value/reference captures. Initialized captures and explicitly typed lambda
+parameters remain unsupported. Escaped character literals may represent UTF-16
+surrogate code units; their original spelling is preserved. Raw source encodings
+must still be valid Unicode. Decimal reals may contain digit separators.
 
 ```powershell
 & 'C:\Program Files\BeefLang\bin\BeefBuild.exe' -workspace=D:\BeefLang\Repository\BeefFormat
@@ -71,7 +80,6 @@ is implemented. Block and expression-bodied local methods are visited for the sa
 rules as member methods. Other expression blocks retain their internal layout
 unless an existing rule explicitly recognizes them. These are rule
 exclusions, rather than review findings.
-
 ## Analysis and preservation limits
 
 * BeefFormat's `Lexer.GetSourceTokens` extension returns a partition of original
@@ -135,15 +143,23 @@ formatting. That fixture checks dangling-else binding, loop targets, call result
 discard, side effects, and destruction of a surrounding scoped object. Temporary
 fixtures are retained for inspection. No repository-wide formatting is performed.
 
-An optional `-RegressionFile` copies an explicit source file into the temporary
+An optional `-RegressionFile` accepts one or more explicit source files and copies each into the temporary
 fixture directory and tests check/diff/write and idempotence there, verifying
 that the original file remains unchanged. The behavior fixture also exercises
 an append-allocated collection, an inferred method-reference callback, struct
-primary-constructor values, and automatic property-finalizer disposal.
+primary-constructor values, automatic property-finalizer disposal, named arguments,
+extension methods, property initializers, allocated callbacks, capture lists, and
+escaped surrogate code units. The reported 14-file BeefForms regression list is
+saved in `Tests/BeefFormsRegressionFiles.txt` and can be run explicitly:
 
-Validated with the installed Beef compiler: Debug and Release builds, 51 formatter
-tests, all 42 BeefParser tests, and 180 integration assertions including an
-explicit regression file (171 without the optional file). Both Win32Backend.bf
+```powershell
+$files = Get-Content .\Tests\BeefFormsRegressionFiles.txt | ForEach-Object { Join-Path 'D:\BeefLang\BeefForms' $_ }
+.\Tests\Run-Integration.ps1 -RegressionFile $files
+```
+
+Validated with the installed Beef compiler: Debug and Release builds, 56 formatter
+tests, all 50 BeefParser tests, and 303 integration assertions including the
+14-file BeefForms regression list (177 without optional files). Both Win32Backend.bf
 and Control.bf have been checked using temporary copies. Body-layout
 tests verify unchanged dangling-else binding, empty switch sections, nested case
 blocks, loop targets, and scoped destruction by compiling/running before and after.
