@@ -461,6 +461,15 @@ public class Formatter
 					type = true;
 				if (kind == .Assign)
 					initializer = true;
+				if (kind == .Tilde && !method && !initializer && i > header && Kind(i - 1) == .Identifier && !Has(header, i, .Operator))
+				{
+					// A field's finalizer is a statement, not another declaration header.
+					i = Statement(i + 1, end, depth);
+					if (Kind(i - 1) == .Semi)
+						i--;
+					initializer = true;
+					continue;
+				}
 				if (!method && !initializer && kind == .TypeAlias)
 					compactType = .TypeAlias;
 				if (kind == .LParen)

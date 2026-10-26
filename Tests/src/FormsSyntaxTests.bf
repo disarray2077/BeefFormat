@@ -19,6 +19,23 @@ class FormsSyntaxTests
 	}
 
 	[Test]
+	public static void FieldFinalizerCallsRemainFields()
+	{
+		let source = scope String("class C\n{\n\tprivate append String mName = .();\n\n\tprivate Font mFont ~ _?.Release();\n\tprivate Point mLocation;\n\tprivate Size mSize, mClientSize;\n\tprivate Font mOther = null ~ _?.Release();\n\tprivate int mBits = ~Mask();\n\tprivate int mLast;\n}\n");
+		let output = scope String();
+		Format(source, output);
+		Test.Assert(output == source, output);
+	}
+
+	[Test]
+	public static void FieldFinalizersKeepMethodAndDestructorBoundaries()
+	{
+		let output = scope String();
+		Format("class C { Font first ~ Release(_); Font second ~ { Release(_); Tick(); }; int count; int Value() => count; Font third ~ _?.Release(); public ~this() { } }", output);
+		Test.Assert(output.Contains("Font first ~ Release(_);\n\tFont second ~\n\t{\n\t\tRelease(_);\n\t\tTick();\n\t};\n\tint count;\n\n\tint Value() => count;\n\n\tFont third ~ _?.Release();\n\n\tpublic ~this()"), output);
+	}
+
+	[Test]
 	public static void PropertyInitializersRemainWithProperties()
 	{
 		let output = scope String();
