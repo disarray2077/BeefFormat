@@ -23,8 +23,8 @@ class FormsSyntaxTests
 	{
 		let output = scope String();
 		Format("class C\n{\n\tpublic bool AutoCheck { get; set; } = true;\n\tint Next() => count;\n\tpublic State Start { get; set; } = .Manual;\n\tvoid F() { }\n}\n", output);
-		Test.Assert(output.Contains("AutoCheck { get; set; } = true;\n\tint Next()"), output);
-		Test.Assert(output.Contains("Start { get; set; } = .Manual;\n\tvoid F()"));
+		Test.Assert(output.Contains("AutoCheck { get; set; } = true;\n\n\tint Next()"), output);
+		Test.Assert(output.Contains("Start { get; set; } = .Manual;\n\n\tvoid F()"));
 	}
 
 	[Test]

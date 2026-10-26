@@ -30,6 +30,42 @@ class FormatterTests
 	}
 
 	[Test]
+	public static void MethodsSeparateFromDataMembersOnBothSides()
+	{
+		let output = scope String();
+		Format("class C { int P => value; void Reset() => value = 0; int this[int index] => index; int Get() => value; int field; int Other() => field; int Q { get; set; } }", output);
+		Test.Assert(output.Contains("int P => value;\n\n\tvoid Reset()"), output);
+		Test.Assert(output.Contains("value = 0;\n\t}\n\n\tint this[int index] => index;\n\tint Get() => value;\n\n\tint field;\n\n\tint Other() => field;\n\n\tint Q { get; set; }"), output);
+	}
+
+	[Test]
+	public static void ExpressionPropertiesMethodsAndIndexersStayTogether()
+	{
+		let source = scope String("class C\n{\n\tint P => 1;\n\tint M() => 1;\n\tint this[int index] => index;\n\tint Q => 1;\n\tint this[StringView name] => 1;\n\tint N() => 1;\n\tint O() => 1;\n\tint R => 1;\n\tint S => 1;\n\tint this[float index] => 1;\n}\n");
+		let output = scope String();
+		Format(source, output);
+		Test.Assert(output == source, output);
+	}
+
+	[Test]
+	public static void ExpressionMemberGroupsPreserveCommentsAndArrowPlacement()
+	{
+		let output = scope String();
+		Format("class C\r\n{\r\n\tpublic Size PreferredSize => GetPreferredSize(default); // property\r\n\t// method\r\n\t[Inline]\r\n\tpublic virtual Size GetPreferredSize(Size proposedSize) => mSpecifiedSize;\r\n\tpublic int this[int index] => values[index];\r\n\tint Compute() => Call();\r\n\tint P => value;\r\n}\r\n", output);
+		Test.Assert(output.Contains("PreferredSize => GetPreferredSize(default); // property\r\n\t// method\r\n\t[Inline]\r\n\tpublic virtual Size GetPreferredSize(Size proposedSize) => mSpecifiedSize;"), output);
+		Test.Assert(output.Contains("this[int index] => values[index];\r\n\tint Compute()\r\n\t\t=> Call();\r\n\tint P => value;"));
+		Test.Assert(!output.Contains("\r\n\r\n"), output);
+	}
+
+	[Test]
+	public static void ConsecutiveAliasesAndCallableTypesRemainTogether()
+	{
+		let output = scope String();
+		Format("namespace N { typealias A = int; typealias B = int; delegate void First(); delegate void Second(); function void Third(); function void Fourth(); class C {} }", output);
+		Test.Assert(output.Contains("typealias A = int;\n\ttypealias B = int;\n\n\tdelegate void First();\n\tdelegate void Second();\n\n\tfunction void Third();\n\tfunction void Fourth();\n\n\tclass C"), output);
+	}
+
+	[Test]
 	public static void VoidExpressionFormsBecomeBlocks()
 	{
 		String[?] expressions = .("NeedsPaint = false", "count += 2", "count++", "++count", "this.Tick()", "value?.Tick()", "Tick<int>()", "Tick(ref count)", "Tick(scope Owner())", "value = new Owner()", "callback = => Handler");
@@ -159,10 +195,10 @@ class FormatterTests
 		let output = scope String();
 		Format("class C\n{\n\tprivate struct AnchorInfo : this(int32 Left, int32 Top, int32 Right, int32 Bottom) {}\n\tpublic Object Value { get; set; } ~ delete _;\n\tpublic void F()\n\t{\n\t}\n}", output);
 		Test.Assert(output.Contains("struct AnchorInfo : this(int32 Left, int32 Top, int32 Right, int32 Bottom);"));
-		Test.Assert(output.Contains("public Object Value { get; set; } ~ delete _;\n\tpublic void F()"));
+		Test.Assert(output.Contains("public Object Value { get; set; } ~ delete _;\n\n\tpublic void F()"));
 		let block = scope String();
 		Format("class C\n{\n\tpublic Object Value { get; set; } ~ { delete _; };\n\tpublic void F()\n\t{\n\t}\n}", block);
-		Test.Assert(block.Contains("~\n\t{\n\t\tdelete _;\n\t};\n\tpublic void F()"), block);
+		Test.Assert(block.Contains("~\n\t{\n\t\tdelete _;\n\t};\n\n\tpublic void F()"), block);
 	}
 
 	static void Format(String input, String output)
@@ -603,7 +639,8 @@ class FormatterTests
 	{
 		let output = scope String();
 		Format("class C { int a; int b; int P => 1; void F() { int local; void Local() { } } }", output);
-		Test.Assert(!output.Contains("\n\n"));
+		Test.Assert(output.Contains("int a;\n\tint b;\n\tint P => 1;\n\n\tvoid F()"), output);
+		Test.Assert(output.Contains("int local;\n\t\tvoid Local()"));
 		output.Clear();
 		Format("class C\n{\n\tint a;\n#if A\n\tvoid F() { }\n#endif\n}\n", output);
 		Test.Assert(output.Contains("int a;\n#if A\n\tvoid F()"));

@@ -423,11 +423,13 @@ public class Formatter
 			mRecursion--;
 		}
 		int i = start;
-		bool previousField = false;
 		bool previousCallable = false;
 		bool previousBlock = false;
 		bool previousConstructor = false;
 		bool previousType = false;
+		TokenType previousCompactType = .EOF;
+		bool previousData = false;
+		bool previousExpressionMember = false;
 		while (i < end && !mFailed)
 		{
 			int header = i;
@@ -445,6 +447,9 @@ public class Formatter
 			bool callable = false;
 			bool block = false;
 			bool constructor = false;
+			bool data = false;
+			bool expressionMember = false;
+			TokenType compactType = .EOF;
 			while (i < end)
 			{
 				let kind = Kind(i);
@@ -456,11 +461,16 @@ public class Formatter
 					type = true;
 				if (kind == .Assign)
 					initializer = true;
+				if (!method && !initializer && kind == .TypeAlias)
+					compactType = .TypeAlias;
 				if (kind == .LParen)
 				{
 					method = !initializer && i > header && (Kind(i - 1) == .Identifier || Kind(i - 1) == .RArrow || Has(header, i, .Operator));
 					if (method && CallableTypeDeclaration(header, i))
+					{
 						type = true;
+						compactType = Has(header, i, .Delegate) ? .Delegate : .Function;
+					}
 					else if (Has(header, i, .Delegate) || Has(header, i, .Function))
 						method = i > header && Kind(i - 1) == .Identifier && Kind(i - 2) == .RParen;
 					int name = CallableNameBefore(i, header);
@@ -470,6 +480,7 @@ public class Formatter
 				{
 					bool ordinary = !type && i > header && OrdinaryMemberHeader(header, i);
 					field = ordinary && (initializer || !method);
+					data = field;
 					callable = ordinary && method && !initializer;
 					if (initializer)
 						Lambdas(header, i, depth);
@@ -486,7 +497,9 @@ public class Formatter
 					}
 					ExpressionMember(header, i, semi, depth, method);
 					callable = !type && method && OrdinaryMemberHeader(header, i);
+					data = !type && !method;
 					block = callable && ExplicitVoid(header, i);
+					expressionMember = (callable || data) && !block;
 					i = semi + 1;
 					break;
 				}
@@ -530,6 +543,7 @@ public class Formatter
 					}
 					else
 					{
+						data = true;
 						Property(i, close, depth);
 						if (Kind(close + 1) == .Assign)
 						{
@@ -551,15 +565,19 @@ public class Formatter
 				}
 				i = Skip(i);
 			}
-			if (header > start && (previousType || type || members && (previousConstructor || constructor || previousField && callable || previousCallable && callable && (previousBlock || block))))
+			bool typeBoundary = (previousType || type) && !(compactType != .EOF && compactType == previousCompactType);
+			bool dataBoundary = (previousData && callable || previousCallable && data) && !(previousExpressionMember && expressionMember);
+			if (header > start && (typeBoundary || members && (previousConstructor || constructor || dataBoundary || previousCallable && callable && (previousBlock || block))))
 				MemberGap(header - 1, header, depth);
 			else if (expand && header > start)
 				Gap(header - 1, header, depth, true, "BF001");
-			previousField = field;
 			previousCallable = callable;
 			previousBlock = block;
 			previousConstructor = constructor;
 			previousType = type;
+			previousCompactType = compactType;
+			previousData = data;
+			previousExpressionMember = expressionMember;
 		}
 	}
 
