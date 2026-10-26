@@ -1,5 +1,6 @@
 param(
-    [string]$Compiler = 'C:\Program Files\BeefLang\bin\BeefBuild.exe'
+    [string]$Compiler = 'C:\Program Files\BeefLang\bin\BeefBuild.exe',
+    [string]$RegressionFile
 )
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot -Parent
@@ -41,6 +42,30 @@ $after = (Get-FileHash -LiteralPath $sample).Hash
 Invoke-Formatter 0 @('--write', $sample)
 Assert-True ((Get-FileHash -LiteralPath $sample).Hash -eq $after) 'Second write changed input'
 Assert-True (-not [IO.File]::ReadAllText($sample).EndsWith("`n")) 'Added final newline'
+$membersFile = Join-Path $fixtureRoot 'member-separation.bf'
+Write-Utf8 $membersFile "class C`r`n{`r`n`tprivate bool mSuppressChars;`r`n`tpublic ~this()`r`n`t{`r`n`t}`r`n}`r`n"
+$membersHash = (Get-FileHash -LiteralPath $membersFile).Hash
+Invoke-Formatter 1 @($membersFile)
+Assert-True ($script:formatterOutput.Contains('BF009:')) 'Missing member-separation diagnostic'
+Assert-True ((Get-FileHash -LiteralPath $membersFile).Hash -eq $membersHash) 'Member-separation check wrote input'
+Invoke-Formatter 1 @('--diff', $membersFile)
+Assert-True ((Get-FileHash -LiteralPath $membersFile).Hash -eq $membersHash) 'Member-separation diff wrote input'
+Invoke-Formatter 0 @('--write', $membersFile)
+Assert-True ([IO.File]::ReadAllText($membersFile).Contains("mSuppressChars;`r`n`r`n`tpublic ~this()")) 'Member separator was not inserted'
+Invoke-Formatter 0 @($membersFile)
+$layoutFile = Join-Path $fixtureRoot 'body-layout.bf'
+Write-Utf8 $layoutFile "class C`n{`n`tvoid F(bool flag, int kind)`n`t{`n`t`tif (flag) Log();`n`t`tswitch (kind)`n`t`t{`n`t`tcase 1: Log();`n`t`tdefault:`n`t`t}`n`t}`n}`n"
+$layoutHash = (Get-FileHash -LiteralPath $layoutFile).Hash
+Invoke-Formatter 1 @($layoutFile)
+Assert-True ($script:formatterOutput.Contains('BF007:') -and $script:formatterOutput.Contains('BF008:')) 'Missing body-layout rule diagnostics'
+Assert-True ((Get-FileHash -LiteralPath $layoutFile).Hash -eq $layoutHash) 'Body-layout check wrote input'
+Invoke-Formatter 1 @('--diff', $layoutFile)
+Assert-True ((Get-FileHash -LiteralPath $layoutFile).Hash -eq $layoutHash) 'Body-layout diff wrote input'
+Invoke-Formatter 0 @('--write', $layoutFile)
+$layoutText = [IO.File]::ReadAllText($layoutFile)
+Assert-True ($layoutText.Contains("if (flag)`n`t`t`tLog();")) 'Unbraced body was not indented'
+Assert-True ($layoutText.Contains("case 1:`n`t`t`tLog();")) 'Case body was not indented'
+Invoke-Formatter 0 @($layoutFile)
 
 foreach ($newline in @("`n", "`r`n", "`r")) {
     foreach ($withBom in @($true, $false)) {
@@ -79,7 +104,7 @@ foreach ($encoding in @([Text.UnicodeEncoding]::new($false, $true, $true), [Text
     Assert-True ([Convert]::ToHexString($roundtrip) -eq [Convert]::ToHexString($wideBytes)) 'Wide encoding did not round trip'
     Invoke-Formatter 0 @($wide)
 }
-foreach ($badText in @('class C { void F() { return } }', "class C {`n#if A`nvoid F() {`n#else`n}`n#endif`n}", '/* unterminated')) {
+foreach ($badText in @('class C { void F() { return } }', "class C {`n#if A`nvoid F() {`n#else`n}`n#endif`n}", '/* unterminated', 'struct S : this(int X,) {}', 'class C { Object Value { get; set; } ~ delete _ }')) {
     Write-Utf8 $invalid $badText
     $originalHash = (Get-FileHash -LiteralPath $invalid).Hash
     Invoke-Formatter 2 @('--write', $invalid)
@@ -152,12 +177,20 @@ StartupObject = "Behavior.Program"
 $behaviorSource = Join-Path $behavior 'src\Program.bf'
 Write-Utf8 $behaviorSource @'
 using System;
+using System.Collections;
 namespace Behavior;
 class Owner { public ~this() { Program.Destroyed++; } }
+class Appended { public append List<int> Values = .(); }
+struct Pair : this(int X, int Y) {}
+class AutoOwned { public Owner Value { get; set; } ~ delete _; public this() { Value = new Owner(); } }
+class Node { public Node Parent; }
+class Target : Node { }
+class LifetimeOwner { public ~this() { Program.LifetimeValue++; } }
 struct Returned { public int Value; public this(int value) { Value = value; } }
 class Program
 {
     public static int Destroyed;
+    public static int LifetimeValue;
     static Owner Borrowed;
     static int Value;
     static void Tick() { Value++; }
@@ -168,15 +201,59 @@ class Program
     static void DiscardValue() => MakeValue();
     static Owner Borrow() { return Borrowed; }
     static void DiscardOwner() => Borrow();
+    static int Callback(int value) => value * 2;
     static int Choose() { if (true) if (false) return 1; else return 2; else return 3; }
     static int ChooseElse() { if (false) return 1; else if (true) return 5; else return 6; }
     static int Loop() { for (;;) while (true) if (false) continue; else return 4; }
+    static int Dangling(bool a, bool b) { if (a) if (b) return 1; else return 2; else return 3; }
+    static Target Find(Node start) { for (var node = start; node != null; node = node.Parent) if (let target = node as Target) return target; return null; }
+    static bool Lifetime(bool flag)
+    {
+        LifetimeValue = 0;
+        if (flag) if (flag) let owner = scope:: LifetimeOwner();
+        return LifetimeValue == 0;
+    }
+    static bool DeferredLifetime(bool flag)
+    {
+        LifetimeValue = 0;
+        if (flag) if (flag) defer:: { LifetimeValue++; }
+        return LifetimeValue == 0;
+    }
+    static int Section(int kind, bool flag)
+    {
+        switch (kind)
+        {
+        case 0: return 10;
+        case 1: case 2: if (flag) return 20; else return 30;
+        case 3: { let owner = scope Owner(); if (flag) return 40; return 50; }
+        default: return 60;
+        }
+        return -1;
+    }
+    static int Loops()
+    {
+        int count = 0;
+        for (int i = 0; i < 3; i++) count++;
+        while (count < 4) count++;
+        return count;
+    }
     static void Owned() { let owner = scope Owner(); Borrowed = owner; Run(); Discard(); DiscardValue(); DiscardOwner(); Borrowed = null; }
     public static int Main()
     {
+        Pair pair = .(3, 4);
+        let target = scope Target();
+        let node = scope Node();
+        node.Parent = target;
+        bool nestedCorrect = Find(node) == target && Lifetime(true) && LifetimeValue == 1 && DeferredLifetime(true) && LifetimeValue == 1;
+        { let owned = scope AutoOwned(); }
         Owned();
-        Console.WriteLine("{}:{}:{}:{}:{}", Value, Choose(), ChooseElse(), Loop(), Destroyed);
-        return Value == 3 && Choose() == 2 && ChooseElse() == 5 && Loop() == 4 && Destroyed == 1 ? 0 : 1;
+        let appended = scope Appended();
+        appended.Values.Add(7);
+        function int(int) callback = => Callback;
+        let callbackValue = callback(appended.Values[0]);
+        bool layoutCorrect = Dangling(true, true) == 1 && Dangling(true, false) == 2 && Dangling(false, false) == 3 && Section(0, false) == 10 && Section(1, true) == -1 && Section(2, true) == 20 && Section(2, false) == 30 && Section(3, true) == 40 && Section(3, false) == 50 && Section(4, false) == 60 && Loops() == 4;
+        Console.WriteLine("{}:{}:{}:{}:{}:{}:{}", Value, Choose(), ChooseElse(), Loop(), Destroyed, callbackValue, layoutCorrect);
+        return (nestedCorrect && pair.X == 3 && pair.Y == 4 && Value == 3 && Choose() == 2 && ChooseElse() == 5 && Loop() == 4 && Destroyed == 4 && callbackValue == 14 && layoutCorrect) ? 0 : 1;
     }
 }
 '@
@@ -193,4 +270,21 @@ $afterBehavior = (& $behaviorExe | Out-String)
 Assert-True ($LASTEXITCODE -eq 0) 'Formatted behavior fixture failed'
 Assert-True ($beforeBehavior -eq $afterBehavior) 'Behavior or ownership changed'
 Invoke-Formatter 0 @($behaviorSource)
+if ($RegressionFile) {
+    $originalRegressionHash = (Get-FileHash -LiteralPath $RegressionFile).Hash
+    $regressionCopy = Join-Path $fixtureRoot 'regression.bf'
+    Copy-Item -LiteralPath $RegressionFile -Destination $regressionCopy
+    $script:formatterOutput = (& $formatterExe --check $regressionCopy 2>&1 | Out-String)
+    $regressionExit = $LASTEXITCODE
+    Assert-True ($regressionExit -eq 0 -or $regressionExit -eq 1) "Regression input failed: $script:formatterOutput"
+    Assert-True ((Get-FileHash -LiteralPath $regressionCopy).Hash -eq $originalRegressionHash) 'Regression check wrote input'
+    Invoke-Formatter $regressionExit @('--diff', $regressionCopy)
+    Assert-True ((Get-FileHash -LiteralPath $regressionCopy).Hash -eq $originalRegressionHash) 'Regression diff wrote input'
+    Invoke-Formatter 0 @('--write', $regressionCopy)
+    Invoke-Formatter 0 @($regressionCopy)
+    $formattedRegressionHash = (Get-FileHash -LiteralPath $regressionCopy).Hash
+    Invoke-Formatter 0 @('--write', $regressionCopy)
+    Assert-True ((Get-FileHash -LiteralPath $regressionCopy).Hash -eq $formattedRegressionHash) 'Regression was not idempotent'
+    Assert-True ((Get-FileHash -LiteralPath $RegressionFile).Hash -eq $originalRegressionHash) 'Original regression source was changed'
+}
 Write-Host "Passed $script:checks integration assertions. Fixtures: $fixtureRoot"

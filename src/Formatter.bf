@@ -23,13 +23,29 @@ public class SourceEdit
 
 public class Formatter
 {
+	struct ClosingBrace
+	{
+		public int Position;
+		public int Depth;
+		public StringView Rule;
+	}
+
+	List<ClosingBrace> mClosingBraces = new .() ~ delete _;
 	String mSource;
 	List<SourceToken> mTokens = new .() ~ delete _;
 	List<int> mPairs = new .() ~ delete _;
+	List<SourceToken> mSourceTokens = new .() ~ delete _;
 	public List<SourceEdit> Edits = new .() ~ DeleteContainerAndItems!(_);
 	public String Error = new .() ~ delete _;
 	bool mFailed;
 	int mRecursion;
+
+#if TEST
+	~this()
+	{
+		GC.Collect(false);
+	}
+#endif
 
 	TokenType Kind(int i)
 		=> i < mTokens.Count ? mTokens[i].Type : .EOF;
@@ -113,6 +129,113 @@ public class Formatter
 		Add(start, end, desired, rule);
 	}
 
+	void BodyGap(int left, int right, int indent, StringView rule, bool braced = false)
+	{
+		if (left < 0 || right >= mTokens.Count)
+			return;
+		int start = mTokens[left].End;
+		int end = mTokens[right].Start;
+		for (let token in mSourceTokens)
+		{
+			if (token.End <= start)
+				continue;
+			if (token.Start >= end)
+				break;
+			if (!token.IsTrivia || token.IsDirective)
+				return;
+		}
+		// Keep comments attached to their original tokens. Only the whitespace
+		// after the final comment belongs to the following statement's layout.
+		int tail = end;
+		while (tail > start && IsSpace(mSource[tail - 1]))
+			tail--;
+		let desired = scope String(Newline(tail));
+		for (int n = 0; n < indent; n++)
+			desired.Append('\t');
+		if (braced)
+		{
+			desired.Append('{');
+			IndentLine(desired, indent + 1, tail);
+		}
+		Add(tail, end, desired, rule);
+	}
+
+	void MemberGap(int left, int right, int indent)
+	{
+		int start = mTokens[left].End;
+		int end = mTokens[right].Start;
+		for (let token in mSourceTokens)
+		{
+			if (token.End <= start)
+				continue;
+			if (token.Start >= end)
+				break;
+			if (!token.IsTrivia || token.IsDirective)
+				return;
+		}
+		// Same-line comments stay with the previous member. Own-line comments remain
+		// attached to the following member, after the separator.
+		for (let token in mSourceTokens)
+		{
+			if (token.End <= start)
+				continue;
+			if (token.Start >= end)
+				break;
+			if (OnlySpace(token.Start, token.End))
+				continue;
+			if (HasLineBreak(mSource.Substring(start, token.Start - start)))
+			{
+				end = token.Start;
+				break;
+			}
+			start = token.End;
+		}
+		int count = 0;
+		int firstStart = -1;
+		int firstEnd = -1;
+		int lastStart = -1;
+		for (int p = start; p < end; p++)
+		{
+			if (!LineBreakAt(p))
+				continue;
+			int lineStart = mSource[p] == '\n' && p > start && mSource[p - 1] == '\r' ? p - 1 : p;
+			if (count == 0)
+			{
+				firstStart = lineStart;
+				firstEnd = p + 1;
+			}
+			lastStart = lineStart;
+			count++;
+		}
+		if (count == 2)
+			return;
+		if (count == 1)
+		{
+			Add(firstEnd, firstEnd, mSource.Substring(firstStart, firstEnd - firstStart), "BF009");
+			return;
+		}
+		if (count > 2)
+		{
+			Add(firstEnd, lastStart, "", "BF009");
+			return;
+		}
+		let desired = scope String(Newline(start));
+		desired.Append(Newline(start));
+		for (int n = 0; n < indent; n++)
+			desired.Append('\t');
+		Add(start, end, desired, "BF009");
+	}
+
+	bool OrdinaryMemberHeader(int start, int end)
+	{
+		for (int i = start; i < end; i = Skip(i))
+		{
+			if (Kind(i) == .Delegate || Kind(i) == .Function || Kind(i) == .TypeAlias || Kind(i) == .Using || Kind(i) == .Enum || Kind(i) == .Mixin)
+				return false;
+		}
+		return true;
+	}
+
 	bool Enter()
 	{
 		mRecursion++;
@@ -179,7 +302,7 @@ public class Formatter
 	}
 
 	// Declarations are scanned at their own delimiter depth, never inside expressions.
-	void Declarations(int start, int end, int depth, bool expand = false)
+	void Declarations(int start, int end, int depth, bool expand = false, bool members = false)
 	{
 		if (!Enter())
 			return;
@@ -188,23 +311,40 @@ public class Formatter
 			mRecursion--;
 		}
 		int i = start;
+		bool previousField = false;
+		bool previousCallable = false;
+		bool previousBlock = false;
+		bool previousConstructor = false;
+		bool previousType = false;
 		while (i < end && !mFailed)
 		{
 			int header = i;
 			bool type = false;
 			bool method = false;
 			bool initializer = false;
+			bool field = false;
+			bool callable = false;
+			bool block = false;
+			bool constructor = false;
 			while (i < end)
 			{
 				let kind = Kind(i);
-				if (kind == .Class || kind == .Struct || kind == .Interface || kind == .Namespace || kind == .Extension)
+				if (!method && !initializer && (kind == .Class || kind == .Struct || kind == .Interface || kind == .Namespace || kind == .Extension || kind == .Enum || kind == .TypeAlias))
 					type = true;
 				if (kind == .Assign)
 					initializer = true;
 				if (kind == .LParen)
+				{
 					method = !initializer && i > header && (Kind(i - 1) == .Identifier || Kind(i - 1) == .RArrow || Has(header, i, .Operator));
+					if (method && Has(header, i, .Delegate))
+						type = true;
+					constructor = !type && method && Raw(i - 1) == "this";
+				}
 				if (kind == .Semi)
 				{
+					bool ordinary = !type && i > header && OrdinaryMemberHeader(header, i);
+					field = ordinary && (initializer || !method);
+					callable = ordinary && method && !initializer;
 					if (initializer)
 						Lambdas(header, i, depth);
 					i++;
@@ -219,6 +359,8 @@ public class Formatter
 						return;
 					}
 					ExpressionMember(header, i, semi, depth, method);
+					callable = !type && method && OrdinaryMemberHeader(header, i);
+					block = callable && ExplicitVoid(header, i) && CanUseStatement(i + 1, semi) && OnlySpace(mTokens[i - 1].End, mTokens[i].Start) && OnlySpace(mTokens[i].End, mTokens[i + 1].Start);
 					i = semi + 1;
 					break;
 				}
@@ -229,28 +371,72 @@ public class Formatter
 					{
 						Lambdas(header, close + 1, depth);
 						i = close + 1;
+						if (initializer)
+							continue;
 						if (Kind(i) == .Semi)
 							i++;
 						break;
 					}
 					if (type)
 					{
+						if (close == i + 1 && Has(header, i, .Struct) && PrimaryConstructor(header, i) && OnlySpace(mTokens[i - 1].End, mTokens[i].Start) && OnlySpace(mTokens[i].End, mTokens[close].Start))
+						{
+							Add(mTokens[i - 1].End, mTokens[close].End, ";", "BF010");
+							i = close + 1;
+							break;
+						}
 						bool inlineBody = SingleLine(i, close);
 						BlockGaps(i, close, depth, inlineBody);
-						Declarations(i + 1, close, depth + 1, inlineBody);
+						Declarations(i + 1, close, depth + 1, inlineBody, !Has(header, i, .Namespace));
 					}
-					else if (method || Has(header, i, .Tilde))
+					else if (method)
+					{
+						callable = OrdinaryMemberHeader(header, i);
+						block = callable;
 						Statements(i, close, depth);
+					}
+					else if (Has(header, i, .Tilde))
+					{
+						Statements(i, close, depth);
+						i = close + 1;
+						continue;
+					}
 					else
+					{
 						Property(i, close, depth);
+						if (Kind(close + 1) == .Tilde)
+						{
+							i = Statement(close + 2, end, depth);
+							if (Kind(i) == .Semi)
+								i++;
+							break;
+						}
+					}
 					i = close + 1;
 					break;
 				}
 				i = Skip(i);
 			}
-			if (expand && i < end)
-				Gap(i - 1, i, depth, true, "BF001");
+			if (header > start && (previousType || type || members && (previousConstructor || constructor || previousField && callable || previousCallable && callable && (previousBlock || block))))
+				MemberGap(header - 1, header, depth);
+			else if (expand && header > start)
+				Gap(header - 1, header, depth, true, "BF001");
+			previousField = field;
+			previousCallable = callable;
+			previousBlock = block;
+			previousConstructor = constructor;
+			previousType = type;
 		}
+	}
+
+	bool PrimaryConstructor(int start, int end)
+	{
+		for (int i = start; i + 2 < end; i = Skip(i))
+		{
+			if (Kind(i) == .Colon && Kind(i + 1) == .Identifier && Raw(i + 1) == "this" && Kind(i + 2) == .LParen)
+				return true;
+		}
+		return false;
 	}
 
 	int ExpressionEnd(int start, int end)
@@ -292,12 +478,13 @@ public class Formatter
 				return;
 			}
 		}
+		bool simple = method && SimpleExpression(arrow + 1, semi);
 		if (method)
-			Gap(arrow - 1, arrow, depth + 1, true, "BF003");
+			Gap(arrow - 1, arrow, depth + 1, !simple, "BF003");
 		else
 			Gap(arrow - 1, arrow, 0, false, "BF006");
 		// Joining only whitespace gaps cannot change comments or multiline literals.
-		if (!method)
+		if (!method || simple)
 		{
 			for (int i = arrow; i < semi; i++)
 			{
@@ -312,12 +499,28 @@ public class Formatter
 					continue;
 				}
 				if (HasLineBreak(mSource.Substring(mTokens[i].End, mTokens[i + 1].Start - mTokens[i].End)))
-					Gap(i, i + 1, 0, false, "BF006");
+					Gap(i, i + 1, 0, false, method ? "BF003" : "BF006");
 			}
 		}
 		else
 			Gap(arrow, arrow + 1, 0, false, "BF003");
 		Lambdas(arrow + 1, semi, method ? depth + 1 : depth);
+	}
+
+	bool SimpleExpression(int start, int end)
+	{
+		if (!PlainRange(start, end))
+			return false;
+		if (end == start + 1)
+			return !HasLineBreak(Raw(start)) && (Kind(start) == .Identifier || Kind(start) == .IntegerLiteral || Kind(start) == .FloatLiteral || Kind(start) == .DoubleLiteral || Kind(start) == .StringLiteral || Kind(start) == .CharLiteral || Kind(start) == .True || Kind(start) == .False || Kind(start) == .Null);
+		if (Kind(start) != .Identifier)
+			return false;
+		for (int i = start + 1; i < end; i += 2)
+		{
+			if (i + 1 >= end || Kind(i) != .Dot || Kind(i + 1) != .Identifier)
+				return false;
+		}
+		return true;
 	}
 
 	bool CanUseStatement(int start, int end)
@@ -412,6 +615,10 @@ public class Formatter
 			Statements(start, mPairs[start], depth, normalize);
 			return mPairs[start] + 1;
 		}
+		if (Kind(start) == .LBracket)
+			return Statement(mPairs[start] + 1, end, depth, normalize);
+		if (Kind(start) == .Identifier && Kind(start + 1) == .Colon)
+			return Statement(start + 2, end, depth, normalize);
 		if (Control(start))
 		{
 			if (Kind(start + 1) != .LParen)
@@ -420,63 +627,263 @@ public class Formatter
 				return end;
 			}
 			int body = mPairs[start + 1] + 1;
-			// Constant conditions and literal-only leaves have no declarations,
-			// references, allocations, defers, or user-defined operations.
-			if (TreeNeedsBraces(start, end))
+			if (Kind(start) == .Switch)
 			{
-				int safeEnd = SafeTree(start, end, 0);
-				if (safeEnd > start && PlainRange(start, safeEnd))
-				{
-					let replacement = scope String();
-					RenderTree(start, safeEnd, depth, replacement);
-					Add(mTokens[start].Start, mTokens[safeEnd - 1].End, replacement, "BF004");
-					return safeEnd;
-				}
+				SwitchBody(body, mPairs[body], depth, normalize);
+				return mPairs[body] + 1;
 			}
-			if (normalize && Kind(body) != .LCurly)
-				Gap(body - 1, body, depth + 1, true, "BF001");
-			int next = Statement(body, end, depth + (Kind(body) == .LCurly ? 0 : 1), normalize);
+			int next = ControlBody(body, end, depth, normalize);
 			if (Kind(start) == .If && Kind(next) == .Else)
 			{
-				if (normalize)
-					Gap(next - 1, next, depth, true, "BF001");
-				if (normalize && Kind(next + 1) != .LCurly)
-					Gap(next, next + 1, depth + 1, true, "BF001");
-				next = Statement(next + 1, end, depth + (Kind(next + 1) == .LCurly ? 0 : 1), normalize);
+				BodyGap(next - 1, next, depth, "BF007");
+				bool chained = Kind(next + 1) == .If;
+				if (chained)
+					Gap(next, next + 1, depth, false, "BF007");
+				next = chained ? Statement(next + 1, end, depth, normalize) : ControlBody(next + 1, end, depth, normalize);
 			}
 			return next;
 		}
 		if (Kind(start) == .Repeat)
 		{
-			int next = Statement(start + 1, end, depth + (Kind(start + 1) == .LCurly ? 0 : 1), normalize);
+			int next = ControlBody(start + 1, end, depth, normalize);
 			if (Kind(next) != .While || Kind(next + 1) != .LParen)
 			{
 				Fail("unsupported repeat statement boundary");
 				return end;
 			}
+			BodyGap(next - 1, next, depth, "BF007");
 			next = mPairs[next + 1] + 1;
 			return Kind(next) == .Semi ? next + 1 : next;
 		}
 		if (Kind(start) == .Do || Kind(start) == .Defer)
 		{
-			if (Kind(start + 1) == .LCurly)
-			{
-				int next = Statement(start + 1, end, depth, normalize);
-				return next;
-			}
+			int body = start + 1;
+			if (Kind(start) == .Defer && Kind(body) == .Colon && Kind(body + 1) == .Mixin)
+				body += 2;
+			else if (Kind(start) == .Defer && Kind(body) == .DoubleColon)
+				body++;
+			if (Kind(start) == .Defer && Kind(body) == .LCurly && SingleDeferStatement(body, mPairs[body]))
+				return mPairs[body] + 1;
+			return ControlBody(body, end, depth, normalize);
+		}
+		int localBody = LocalMethodBlock(start, end);
+		if (localBody >= 0)
+		{
+			Statements(localBody, mPairs[localBody], depth, normalize);
+			return mPairs[localBody] + 1;
 		}
 		int semi = ExpressionEnd(start, end);
 		Lambdas(start, semi, depth);
 		return semi < end ? semi + 1 : end;
 	}
 
-	bool TreeNeedsBraces(int start, int end)
+	bool Flow(int i)
+		=> Control(i) || Kind(i) == .Repeat || Kind(i) == .Do || Kind(i) == .Defer;
+
+	int StatementEnd(int start, int end, int level = 0)
 	{
-		int body = mPairs[start + 1] + 1;
-		if (Control(body))
-			return true;
-		int next = SafeTree(body, end, 0);
-		return Kind(start) == .If && next >= 0 && Kind(next) == .Else && Control(next + 1);
+		if (start >= end || level > 128)
+			return end;
+		if (Kind(start) == .LCurly)
+			return mPairs[start] + 1;
+		if (Kind(start) == .LBracket)
+			return StatementEnd(mPairs[start] + 1, end, level + 1);
+		if (Kind(start) == .Identifier && Kind(start + 1) == .Colon)
+			return StatementEnd(start + 2, end, level + 1);
+		if (Control(start))
+		{
+			int next = StatementEnd(mPairs[start + 1] + 1, end, level + 1);
+			if (Kind(start) == .If && Kind(next) == .Else)
+				next = StatementEnd(next + 1, end, level + 1);
+			return next;
+		}
+		if (Kind(start) == .Repeat)
+		{
+			int next = StatementEnd(start + 1, end, level + 1);
+			if (Kind(next) != .While || Kind(next + 1) != .LParen)
+				return end;
+			next = mPairs[next + 1] + 1;
+			return Kind(next) == .Semi ? next + 1 : next;
+		}
+		if (Kind(start) == .Do || Kind(start) == .Defer)
+		{
+			int body = start + 1;
+			if (Kind(start) == .Defer && Kind(body) == .DoubleColon)
+				body++;
+			else if (Kind(start) == .Defer && Kind(body) == .Colon && Kind(body + 1) == .Mixin)
+				body += 2;
+			return StatementEnd(body, end, level + 1);
+		}
+		return Math.Min(end, ExpressionEnd(start, end) + 1);
+	}
+
+	int ControlBody(int body, int end, int depth, bool normalize)
+	{
+		bool wrap = Flow(body);
+		int boundary = wrap ? StatementEnd(body, end) : body;
+		if (wrap)
+		{
+			for (let token in mSourceTokens)
+			{
+				if (token.Start >= mTokens[body - 1].End && token.Start < mTokens[boundary - 1].End && token.IsDirective)
+					wrap = false;
+			}
+		}
+		if (Kind(body) != .LCurly)
+			BodyGap(body - 1, body, wrap ? depth : depth + 1, wrap ? "BF004" : "BF007", wrap);
+		int next = Statement(body, end, depth + (Kind(body) == .LCurly ? 0 : 1), normalize || wrap);
+		if (wrap)
+		{
+			QueueClosing(mTokens[next - 1].End, depth, "BF004");
+		}
+		return next;
+	}
+
+	void QueueClosing(int position, int depth, StringView rule)
+	{
+		let brace = ClosingBrace() { Position = ClosingPosition(position), Depth = depth, Rule = rule };
+		for (let previous in mClosingBraces)
+		{
+			if (previous.Position == brace.Position && previous.Depth == brace.Depth && previous.Rule == rule)
+				return;
+		}
+		mClosingBraces.Add(brace);
+	}
+
+	int ClosingPosition(int position)
+	{
+		var position;
+		for (let token in mSourceTokens)
+		{
+			if (token.End <= position)
+				continue;
+			if (!token.IsTrivia || token.IsDirective)
+				break;
+			if (OnlySpace(token.Start, token.End))
+			{
+				if (HasLineBreak(mSource.Substring(token.Start, token.End - token.Start)))
+					break;
+			}
+			else
+				position = token.End;
+		}
+		return position;
+	}
+
+	void CloseBodies()
+	{
+		mClosingBraces.Sort(scope (a, b) => a.Position == b.Position ? b.Depth <=> a.Depth : a.Position <=> b.Position);
+		int i = 0;
+		while (i < mClosingBraces.Count)
+		{
+			int position = mClosingBraces[i].Position;
+			let rule = mClosingBraces[i].Rule;
+			let closing = scope String();
+			while (i < mClosingBraces.Count && mClosingBraces[i].Position == position)
+			{
+				IndentLine(closing, mClosingBraces[i].Depth, position);
+				closing.Append('}');
+				i++;
+			}
+			bool merged = false;
+			for (let edit in Edits)
+			{
+				if (edit.Start == position)
+				{
+					edit.Text.Insert(0, closing);
+					edit.Rule = rule;
+					merged = true;
+					break;
+				}
+			}
+			if (!merged)
+				Add(position, position, closing, rule);
+		}
+	}
+
+	bool SingleDeferStatement(int open, int close)
+	{
+		if (close <= open + 2 || Kind(close - 1) != .Semi)
+			return false;
+		for (int i = open + 1; i < close - 1; i = Skip(i))
+		{
+			if (Control(i) || Kind(i) == .LCurly || Kind(i) == .Semi || Kind(i) == .Defer || Kind(i) == .Do || Kind(i) == .Repeat)
+				return false;
+		}
+		return true;
+	}
+
+	int LocalMethodBlock(int start, int end)
+	{
+		bool parameters = false;
+		for (int i = start; i < end; i = Skip(i))
+		{
+			if (Kind(i) == .Assign || Kind(i) == .Semi || Kind(i) == .Bind || Kind(i) == .Return || Kind(i) == .New || Kind(i) == .Scope || Kind(i) == .Append || Kind(i) == .Delete)
+				return -1;
+			if (Kind(i) == .LParen && i >= start + 2 && (Kind(i - 1) == .Identifier || Kind(i - 1) == .RArrow))
+				parameters = true;
+			if (Kind(i) == .LCurly)
+				return parameters ? i : -1;
+		}
+		return -1;
+	}
+
+	void SwitchBody(int open, int close, int depth, bool normalize)
+	{
+		bool expand = normalize || SingleLine(open, close);
+		if (expand)
+		{
+			Gap(open - 1, open, depth, true, "BF001");
+			Gap(close - 1, close, depth, true, "BF001");
+		}
+		else
+		{
+			// BF008 owns the entire gap before the first label.
+			if (open + 1 == close)
+				TrimBlankGap(open, close);
+			TrimBlankGap(close - 1, close);
+		}
+		int i = open + 1;
+		while (i < close && !mFailed)
+		{
+			if (Kind(i) != .Case && Kind(i) != .Default)
+			{
+				Fail("unsupported switch label boundary");
+				return;
+			}
+			BodyGap(i - 1, i, depth, "BF008");
+			int colon = i + 1;
+			int conditional = 0;
+			while (colon < close)
+			{
+				if (Kind(colon) == .QuestionMark)
+					conditional++;
+				if (Kind(colon) == .Colon)
+				{
+					if (conditional == 0)
+						break;
+					conditional--;
+				}
+				colon = Skip(colon);
+			}
+			if (colon == close)
+			{
+				Fail("unsupported switch label expression");
+				return;
+			}
+			i = colon + 1;
+			while (i < close && Kind(i) != .Case && Kind(i) != .Default && !mFailed)
+			{
+				BodyGap(i - 1, i, depth + 1, "BF008");
+				int next = Statement(i, close, depth + 1, expand);
+				if (next <= i)
+				{
+					Fail("unsupported switch statement boundary");
+					return;
+				}
+				i = next;
+			}
+		}
 	}
 
 	bool PlainRange(int start, int end)
@@ -489,90 +896,11 @@ public class Formatter
 		return true;
 	}
 
-	int SafeTree(int start, int end, int level)
-	{
-		if (start >= end || level > 64)
-			return -1;
-		if (Kind(start) == .If || Kind(start) == .While || Kind(start) == .For)
-		{
-			if (Kind(start + 1) != .LParen)
-				return -1;
-			int close = mPairs[start + 1];
-			bool constant = close == start + 3 && (Kind(start + 2) == .True || Kind(start + 2) == .False);
-			bool forever = Kind(start) == .For && close == start + 4 && Kind(start + 2) == .Semi && Kind(start + 3) == .Semi;
-			if (!constant && !forever || Kind(start) == .For && !forever)
-				return -1;
-			int next = SafeTree(close + 1, end, level + 1);
-			if (next < 0)
-				return -1;
-			if (Kind(start) == .If && Kind(next) == .Else)
-				next = SafeTree(next + 1, end, level + 1);
-			return next;
-		}
-		if (Kind(start) == .Break || Kind(start) == .Continue || Kind(start) == .Return)
-		{
-			if (Kind(start + 1) == .Semi)
-				return start + 2;
-			if (Kind(start) == .Return && (Kind(start + 1) == .True || Kind(start + 1) == .False || Kind(start + 1) == .IntegerLiteral) && Kind(start + 2) == .Semi)
-				return start + 3;
-		}
-		return -1;
-	}
-
 	void IndentLine(String output, int depth, int position)
 	{
 		output.Append(Newline(position));
 		for (int n = 0; n < depth; n++)
 			output.Append('\t');
-	}
-
-	int RenderTree(int start, int end, int depth, String output)
-	{
-		if (!Control(start))
-		{
-			int next = SafeTree(start, end, 0);
-			output.Append(mSource.Substring(mTokens[start].Start, mTokens[next - 1].End - mTokens[start].Start));
-			return next;
-		}
-		int close = mPairs[start + 1];
-		output.Append(mSource.Substring(mTokens[start].Start, mTokens[close].End - mTokens[start].Start));
-		int body = close + 1;
-		int next;
-		if (Control(body))
-		{
-			IndentLine(output, depth, mTokens[start].Start);
-			output.Append('{');
-			IndentLine(output, depth + 1, mTokens[start].Start);
-			next = RenderTree(body, end, depth + 1, output);
-			IndentLine(output, depth, mTokens[start].Start);
-			output.Append('}');
-		}
-		else
-		{
-			IndentLine(output, depth + 1, mTokens[start].Start);
-			next = RenderTree(body, end, depth + 1, output);
-		}
-		if (Kind(start) == .If && Kind(next) == .Else)
-		{
-			IndentLine(output, depth, mTokens[start].Start);
-			output.Append("else");
-			int alternative = next + 1;
-			if (Control(alternative))
-			{
-				IndentLine(output, depth, mTokens[start].Start);
-				output.Append('{');
-				IndentLine(output, depth + 1, mTokens[start].Start);
-				next = RenderTree(alternative, end, depth + 1, output);
-				IndentLine(output, depth, mTokens[start].Start);
-				output.Append('}');
-			}
-			else
-			{
-				IndentLine(output, depth + 1, mTokens[start].Start);
-				next = RenderTree(alternative, end, depth + 1, output);
-			}
-		}
-		return next;
 	}
 
 	void Lambdas(int start, int end, int depth)
@@ -595,6 +923,7 @@ public class Formatter
 		Error.Clear();
 		mFailed = false;
 		mRecursion = 0;
+		mClosingBraces.Clear();
 		mSource = source;
 		bool success = false;
 		defer
@@ -602,7 +931,8 @@ public class Formatter
 			if (!success)
 				ClearAndDeleteItems(Edits);
 		}
-		let all = scope List<SourceToken>();
+		let all = mSourceTokens;
+		all.Clear();
 		let lexer = scope Lexer(source, false);
 		if (lexer.GetSourceTokens(all) case .Err)
 		{
@@ -617,6 +947,7 @@ public class Formatter
 		for (let branch in branches)
 			Try!(AnalyzeBranch(branch));
 		CollapseBlankLines(all);
+		CloseBodies();
 		if (mFailed)
 			return .Err;
 		Edits.Sort(scope (a, b) => a.Start <=> b.Start);
