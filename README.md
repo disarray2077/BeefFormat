@@ -2,8 +2,11 @@
 
 A standalone Beef console formatter using the sibling **BeefParser** project.
 It applies source edits, never AST-generated source. Checking is the default.
-The required BeefParser source-span/error API is committed through `cb2652f` in that
-repository; keep that revision or a compatible newer revision beside BeefFormat.
+Lossless source-token support lives in this project's `src/SourceTokens` folder:
+`SourceToken.bf` defines `BeefFormat.SourceTokens.SourceToken`, and
+`SourceTokenLexer.bf` extends the sibling lexer from BeefFormat. The extension uses
+the `BeefParser` namespace to attach to `Lexer`, but is compiled by BeefFormat.
+BeefParser provides lexical recognition and its opt-in quiet-error API.
 
 ```powershell
 & 'C:\Program Files\BeefLang\bin\BeefBuild.exe' -workspace=D:\BeefLang\Repository\BeefFormat
@@ -55,7 +58,7 @@ exclusions, rather than review findings.
 
 ## Analysis and preservation limits
 
-* The optional `Lexer.GetSourceTokens` API returns a partition of original
+* BeefFormat's `Lexer.GetSourceTokens` extension returns a partition of original
   UTF-8 byte ranges, including trivia. It reuses the existing token lexer and
   consumes comments/directives before delegating token recognition. It handles
   nested block comments without changing the legacy token API. Interpolated
