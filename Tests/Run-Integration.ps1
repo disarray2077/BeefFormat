@@ -34,7 +34,7 @@ Invoke-Formatter 1 @($sample)
 Assert-True ($script:formatterOutput -match 'sample.bf:1: BF001') 'Missing location/rule'
 Assert-True ((Get-FileHash -LiteralPath $sample).Hash -eq $before) 'Check wrote input'
 Invoke-Formatter 1 @('--diff', $sample)
-Assert-True ($script:formatterOutput.Contains('@@ -1,1 +1,')) 'Missing unified diff hunk'
+Assert-True ($script:formatterOutput.Contains('@@ -1 +1,')) 'Missing unified diff hunk'
 Assert-True ((Get-FileHash -LiteralPath $sample).Hash -eq $before) 'Diff wrote input'
 Invoke-Formatter 0 @('--write', $sample)
 Invoke-Formatter 0 @('--check', $sample)
@@ -42,6 +42,36 @@ $after = (Get-FileHash -LiteralPath $sample).Hash
 Invoke-Formatter 0 @('--write', $sample)
 Assert-True ((Get-FileHash -LiteralPath $sample).Hash -eq $after) 'Second write changed input'
 Assert-True (-not [IO.File]::ReadAllText($sample).EndsWith("`n")) 'Added final newline'
+$diffFile = Join-Path $fixtureRoot 'diff-context.bf'
+$diffLines = @('class DiffContext', '{', "`tvoid F(bool flag)", "`t{")
+for ($i = 0; $i -lt 30; $i++) {
+    $diffLines += if ($i -eq 5 -or $i -eq 22) { "`t`tif (flag) return;" } else { "`t`tint v$i = $i;" }
+}
+$diffLines += @("`t}", '}')
+Write-Utf8 $diffFile (($diffLines -join "`n") + "`n")
+$diffHash = (Get-FileHash -LiteralPath $diffFile).Hash
+Invoke-Formatter 1 @('--diff', $diffFile)
+Assert-True (([regex]::Matches($script:formatterOutput, '(?m)^@@ ')).Count -eq 2) 'Distant changes should have separate hunks'
+Assert-True (-not $script:formatterOutput.Contains('-class DiffContext')) 'Diff removed unchanged file contents'
+Assert-True ($script:formatterOutput.Contains("-`t`tif (flag) return;")) 'Diff omitted changed line'
+Assert-True ($script:formatterOutput.Contains("+`t`t`treturn;")) 'Diff omitted replacement line'
+Assert-True ((Get-FileHash -LiteralPath $diffFile).Hash -eq $diffHash) 'Context diff wrote input'
+$patchText = $script:formatterOutput -replace '\r\n', "`n"
+$patchLines = $patchText.Split("`n")
+$patchLines[0] = '--- a/diff-context.bf'
+$patchLines[1] = '+++ b/diff-context.bf'
+$patchFile = Join-Path $fixtureRoot 'context.patch'
+Write-Utf8 $patchFile ($patchLines -join "`n")
+Push-Location $fixtureRoot
+try {
+    & git apply --no-index --check $patchFile
+    Assert-True ($LASTEXITCODE -eq 0) 'Git rejected generated unified diff'
+    & git apply --no-index $patchFile
+    Assert-True ($LASTEXITCODE -eq 0) 'Git could not apply generated unified diff'
+} finally {
+    Pop-Location
+}
+Invoke-Formatter 0 @('--check', $diffFile)
 $membersFile = Join-Path $fixtureRoot 'member-separation.bf'
 Write-Utf8 $membersFile "class C`r`n{`r`n`tprivate bool mSuppressChars;`r`n`tpublic ~this()`r`n`t{`r`n`t}`r`n}`r`n"
 $membersHash = (Get-FileHash -LiteralPath $membersFile).Hash

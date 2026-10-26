@@ -222,11 +222,9 @@ public static class CommandLine
 		}
 		if (mode == 1)
 		{
-			Console.WriteLine("--- {}", path);
-			Console.WriteLine("+++ {} (formatted)", path);
-			Console.WriteLine("@@ -1,{} +1,{} @@", LineCount(text), LineCount(output));
-			DiffLines(text, '-');
-			DiffLines(output, '+');
+			let diff = scope String();
+			UnifiedDiff.Render(path, text, output, diff);
+			Console.Write(diff);
 		}
 		else
 		{
@@ -234,37 +232,6 @@ public static class CommandLine
 				Console.WriteLine("{}:{}: {}: formatting difference", path, formatter.LineAt(edit.Start), edit.Rule);
 		}
 		return 1;
-	}
-
-	static int LineCount(StringView text)
-	{
-		int count = (text.IsEmpty || text.EndsWith('\n') || text.EndsWith('\r')) ? 0 : 1;
-		for (int p = 0; p < text.Length; p++)
-		{
-			if (text[p] == '\n' || text[p] == '\r' && (p + 1 == text.Length || text[p + 1] != '\n'))
-				count++;
-		}
-		return count;
-	}
-
-	static void DiffLines(StringView text, char8 prefix)
-	{
-		int start = 0;
-		for (int p = 0; p < text.Length; p++)
-		{
-			if (text[p] == '\n' || text[p] == '\r')
-			{
-				Console.WriteLine("{}{}", prefix, text.Substring(start, p - start));
-				if (text[p] == '\r' && p + 1 < text.Length && text[p + 1] == '\n')
-					p++;
-				start = p + 1;
-			}
-		}
-		if (start < text.Length)
-		{
-			Console.WriteLine("{}{}", prefix, text.Substring(start));
-			Console.WriteLine("\\ No newline at end of file");
-		}
 	}
 
 	public static int Run(String[] args)

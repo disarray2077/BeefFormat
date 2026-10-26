@@ -29,7 +29,12 @@ excludes `Tests`, `build`, `dist`, `generated`, `bin`, `obj`, `BeefSpace`, `.git
 directory targets; explicitly named files are processed. Directory links found
 while traversing are skipped, as are file links discovered during traversal.
 Initial directory enumeration failures are processing errors. Check/diff never write. Diff emits a unified diff
-with one whole-file hunk, including missing-final-newline markers.
+with three lines of context, accurate old/new line ranges, and separate hunks for
+distant changes. Nearby hunks merge; unchanged lines are prefixed with a space,
+removals with `-`, and additions with `+`. Missing-final-newline markers are included.
+Line matching uses Myers' shortest edit path, with deterministic tie breaking.
+For changes exceeding 2,048 inserted/deleted lines, trace memory is bounded by
+falling back to a replacement between the common leading and trailing lines.
 
 Exit codes: **0** means no differences remain; **1** means check/diff found
 fixable differences; **2** means usage or processing errors. Errors take
@@ -136,9 +141,9 @@ that the original file remains unchanged. The behavior fixture also exercises
 an append-allocated collection, an inferred method-reference callback, struct
 primary-constructor values, and automatic property-finalizer disposal.
 
-Validated with the installed Beef compiler: Debug and Release builds, 42 formatter
-tests, all 42 BeefParser tests, and 163 integration assertions including an
-explicit regression file (154 without the optional file). Both Win32Backend.bf
+Validated with the installed Beef compiler: Debug and Release builds, 47 formatter
+tests, all 42 BeefParser tests, and 172 integration assertions including an
+explicit regression file (163 without the optional file). Both Win32Backend.bf
 and Control.bf have been checked using temporary copies. Body-layout
 tests verify unchanged dangling-else binding, empty switch sections, nested case
 blocks, loop targets, and scoped destruction by compiling/running before and after.
