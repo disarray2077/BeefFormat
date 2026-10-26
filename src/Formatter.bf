@@ -23,6 +23,14 @@ public class SourceEdit
 
 public class Formatter
 {
+	struct LineIndent
+	{
+		public int Start;
+		public int End;
+		public int Depth;
+	}
+
+	List<LineIndent> mIndentation = new .() ~ delete _;
 	struct ClosingBrace : IHashable
 	{
 		public int Position;
@@ -267,6 +275,67 @@ public class Formatter
 		Add(start, end, desired, "BF009");
 	}
 
+	void QueueIndent(int token, int depth)
+	{
+		if (token < 0 || token >= mTokens.Count)
+			return;
+		int end = mTokens[token].Start;
+		int start = end;
+		while (start > 0 && (mSource[start - 1] == ' ' || mSource[start - 1] == '\t'))
+			start--;
+		if (start > 0 && mSource[start - 1] != '\r' && mSource[start - 1] != '\n')
+			return;
+		mIndentation.Add(.() { Start = start, End = end, Depth = depth });
+	}
+
+	void ApplyIndentation()
+	{
+		mIndentation.Sort(scope (a, b) => a.Start <=> b.Start);
+		let existingCount = Edits.Count;
+		for (int i = 0; i < mIndentation.Count; i++)
+		{
+			let indent = mIndentation[i];
+			if (i > 0 && mIndentation[i - 1].Start == indent.Start)
+			{
+				if (mIndentation[i - 1].End != indent.End || mIndentation[i - 1].Depth != indent.Depth)
+					Fail("conflicting indentation across preprocessor branches");
+				continue;
+			}
+			let desired = scope String();
+			for (int n = 0; n < indent.Depth; n++)
+				desired.Append('\t');
+			if (mSource.Substring(indent.Start, indent.End - indent.Start) == desired)
+				continue;
+			if (mEditsByStart.TryGetValue(indent.Start, let edit))
+			{
+				// A member separator may insert a newline at the start of this prefix.
+				if (edit.End == indent.Start)
+				{
+					edit.End = indent.End;
+					edit.Text.Append(desired);
+				}
+				continue;
+			}
+			int next = FirstEditAtOrAfter(indent.End, existingCount);
+			if (next > 0 && Edits[next - 1].End == indent.End && SetReplacementIndent(Edits[next - 1], desired))
+				continue;
+			if (!EditIntersects(indent.Start, indent.End, existingCount))
+				Add(indent.Start, indent.End, desired, "BF011");
+		}
+	}
+
+	bool SetReplacementIndent(SourceEdit edit, StringView indent)
+	{
+		int tail = edit.Text.Length;
+		while (tail > 0 && (edit.Text[tail - 1] == '\t' || edit.Text[tail - 1] == ' '))
+			tail--;
+		if (tail == 0 || (edit.Text[tail - 1] != '\r' && edit.Text[tail - 1] != '\n'))
+			return false;
+		edit.Text.Remove(tail, edit.Text.Length - tail);
+		edit.Text.Append(indent);
+		return true;
+	}
+
 	bool OrdinaryMemberHeader(int start, int end)
 	{
 		for (int i = start; i < end; i = Skip(i))
@@ -305,6 +374,8 @@ public class Formatter
 
 	void BlockGaps(int open, int close, int depth, bool expand)
 	{
+		QueueIndent(open, depth);
+		QueueIndent(close, depth);
 		if (expand)
 		{
 			Gap(open - 1, open, depth, true, "BF001");
@@ -360,6 +431,12 @@ public class Formatter
 		while (i < end && !mFailed)
 		{
 			int header = i;
+			QueueIndent(header, depth);
+			for (int attribute = header; Kind(attribute) == .LBracket;)
+			{
+				attribute = Skip(attribute);
+				QueueIndent(attribute, depth);
+			}
 			bool type = false;
 			bool enumDeclaration = false;
 			bool method = false;
@@ -637,6 +714,8 @@ public class Formatter
 		BlockGaps(open, close, depth, SingleLine(open, close));
 		for (int i = open + 1; i < close; i++)
 		{
+			if (i == open + 1 || Kind(i - 1) == .Semi || Kind(i - 1) == .RCurly)
+				QueueIndent(i, depth + 1);
 			if (Kind(i) == .Bind)
 			{
 				int semi = ExpressionEnd(i + 1, close);
@@ -683,6 +762,7 @@ public class Formatter
 
 	int Statement(int start, int end, int depth, bool normalize = false)
 	{
+		QueueIndent(start, depth);
 		if (!Enter())
 			return end;
 		defer
@@ -742,7 +822,12 @@ public class Formatter
 			else if (Kind(start) == .Defer && Kind(body) == .DoubleColon)
 				body++;
 			if (Kind(start) == .Defer && Kind(body) == .LCurly && SingleDeferStatement(body, mPairs[body]))
+			{
+				QueueIndent(body, depth);
+				QueueIndent(body + 1, depth + 1);
+				QueueIndent(mPairs[body], depth);
 				return mPairs[body] + 1;
+			}
 			return ControlBody(body, end, depth, normalize);
 		}
 		int localBody = LocalMethodBlock(start, end);
@@ -927,6 +1012,8 @@ public class Formatter
 
 	void SwitchBody(int open, int close, int depth, bool normalize)
 	{
+		QueueIndent(open, depth);
+		QueueIndent(close, depth);
 		bool expand = normalize || SingleLine(open, close);
 		if (expand)
 		{
@@ -1023,6 +1110,7 @@ public class Formatter
 		mRecursion = 0;
 		mClosingBraces.Clear();
 		mClosingKeys.Clear();
+		mIndentation.Clear();
 		mSource = source;
 		mLineBreaks.Clear();
 		for (int p = 0; p < mSource.Length; p++)
@@ -1061,6 +1149,10 @@ public class Formatter
 		CloseBodies();
 		if (mFailed)
 			return .Err;
+		ValidateEdits();
+		if (mFailed)
+			return .Err;
+		ApplyIndentation();
 		ValidateEdits();
 		if (mFailed)
 			return .Err;
@@ -1240,17 +1332,23 @@ public class Formatter
 		}
 	}
 
-	bool EditIntersects(int start, int end, int count)
+	int FirstEditAtOrAfter(int position, int count)
 	{
 		int low = 0, high = count;
 		while (low < high)
 		{
 			int middle = low + (high - low) / 2;
-			if (Edits[middle].Start < start)
+			if (Edits[middle].Start < position)
 				low = middle + 1;
 			else
 				high = middle;
 		}
+		return low;
+	}
+
+	bool EditIntersects(int start, int end, int count)
+	{
+		int low = FirstEditAtOrAfter(start, count);
 		if (low > 0 && Edits[low - 1].End > start)
 			return true;
 		for (int i = low; i < count && Edits[i].Start < end; i++)

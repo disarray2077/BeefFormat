@@ -94,6 +94,17 @@ Assert-True ((Get-FileHash -LiteralPath $voidFile).Hash -eq $voidHash) 'Void-exp
 Invoke-Formatter 0 @('--write', $voidFile)
 Assert-True ([IO.File]::ReadAllText($voidFile).Contains("void NotifyPaint()`n`t{`n`t`tNeedsPaint = false;`n`t}")) 'Void assignment was not converted to a block'
 Invoke-Formatter 0 @($voidFile)
+$indentFile = Join-Path $fixtureRoot 'indentation.bf'
+Write-Utf8 $indentFile "class C`n{`n`tvoid F(bool flag)`n`t{`n`t`tif (flag)`n`t`t`tTick();`n`t`t`tTock();`n`t}`n}`n"
+$indentHash = (Get-FileHash -LiteralPath $indentFile).Hash
+Invoke-Formatter 1 @($indentFile)
+Assert-True ($script:formatterOutput.Contains('BF011:')) 'Missing indentation diagnostic'
+Assert-True ((Get-FileHash -LiteralPath $indentFile).Hash -eq $indentHash) 'Indentation check wrote input'
+Invoke-Formatter 1 @('--diff', $indentFile)
+Assert-True ((Get-FileHash -LiteralPath $indentFile).Hash -eq $indentHash) 'Indentation diff wrote input'
+Invoke-Formatter 0 @('--write', $indentFile)
+Assert-True ([IO.File]::ReadAllText($indentFile).Contains("if (flag)`n`t`t`tTick();`n`t`tTock();")) 'Sibling statement indentation was not corrected'
+Invoke-Formatter 0 @($indentFile)
 $layoutFile = Join-Path $fixtureRoot 'body-layout.bf'
 Write-Utf8 $layoutFile "class C`n{`n`tvoid F(bool flag, int kind)`n`t{`n`t`tif (flag) Log();`n`t`tswitch (kind)`n`t`t{`n`t`tcase 1: Log();`n`t`tdefault:`n`t`t}`n`t}`n}`n"
 $layoutHash = (Get-FileHash -LiteralPath $layoutFile).Hash
@@ -316,6 +327,14 @@ class Program
         while (count < 4) count++;
         return count;
     }
+    static int SiblingIndent(bool flag)
+    {
+        int result = 0;
+        if (flag)
+            result += 1;
+            result += 2;
+        return result;
+    }
     static void Owned() { let owner = scope Owner(); Borrowed = owner; Run(); Discard(); DiscardValue(); DiscardOwner(); Borrowed = null; }
     public static int Main()
     {
@@ -324,7 +343,7 @@ class Program
         let generic = scope GenericCallables(3);
         let expressions = scope ExpressionCases();
         expressions.Assign(); expressions.Compound(); expressions.Postfix(); expressions.Prefix(); expressions.Generic<int>(); expressions.RunLocal();
-        bool expressionCorrect = generic.Value == 7 && generic.Identity(9, true) == 9 && generic.Identity(8, false) == 8 && Direction.North.Matches(.North) && Direction.South.Matches(.South) && ImmediateDeferOrder(true) && pairSize > 0 && expressions.Count == 10 && expressions.Enabled && (3).Increased(amount: 2) == 5;
+        bool expressionCorrect = SiblingIndent(true) == 3 && SiblingIndent(false) == 2 && generic.Value == 7 && generic.Identity(9, true) == 9 && generic.Identity(8, false) == 8 && Direction.North.Matches(.North) && Direction.South.Matches(.South) && ImmediateDeferOrder(true) && pairSize > 0 && expressions.Count == 10 && expressions.Enabled && (3).Increased(amount: 2) == 5;
         ((IReset)expressions).Reset();
         expressionCorrect &= expressions.Count == 5;
         expressions.NullConditional(null); expressions.NullConditional(other: expressions); expressions.Scoped();

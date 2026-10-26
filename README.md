@@ -57,7 +57,9 @@ preconditions has no finding for that rule. There are no uncertain findings or
 subjective style diagnostics. Other applicable rules can still format its
 whitespace. Tabs provide indentation; block lambdas are indented even when already
 multiline. Expanding an inline body also indents its recognized nested statements.
-Other existing multiline indentation is retained. The formatter does not infer logical phases or remove single blank
+Recognized declaration/statement starts, implemented accessor headers and block
+braces use one tab per syntax level even in existing multiline blocks. Expression
+continuations and comment-only lines retain their existing indentation. The formatter does not infer logical phases or remove single blank
 lines between statements.
 
 | ID | Exact applicability and exclusions | Behavior preservation |
@@ -72,6 +74,7 @@ lines between statements.
 | BF008 | Visit switch sections separately from ordinary statement blocks. Place `case`/`default` labels on lines aligned with the switch header, then place every section statement on its own line one tab level deeper. Skip balanced expression delimiters and distinguish ternary colons when finding the label separator. Empty/stacked labels stay empty; existing case blocks and nested switches are visited without introducing scopes. Comments are preserved using the same trailing-whitespace rule as BF007. Directive/inactive-code gaps are excluded. | Whitespace only. Label values, separators, section boundaries, implicit section-exit behavior, variable lifetimes, and control-flow targets remain unchanged. No fallthrough or implicit statement is introduced. |
 | BF009 | Insert exactly one blank line at declaration boundaries: field group to following callable; either side of a constructor/destructor; between adjacent methods when either has a block body, including BF002 output; and either side of class/struct/interface/extension/enum/typealias/recognized delegate declarations. Applies in member or namespace lists as appropriate, never against enclosing braces or between local statements. Keep consecutive fields and expression-only methods together. Preserve trailing/leading comment attachment and attributes; exclude directive/inactive-code gaps. Takes priority over BF001/BF005. | Separating whitespace only; declaration order, scopes, attributes and initializers remain unchanged. |
 | BF010 | Empty struct with a primary constructor, with only whitespace between its final header token and opening brace and between braces. Replace that whitespace and the two braces with a semicolon. Preserve commented/nonempty bodies and ordinary empty structs. | Both Beef forms declare the same primary constructor and generated fields with no additional members. Before/after compiler/run tests check constructed field values. |
+| BF011 | For parsed declaration headers, implemented accessor headers, statement starts and recognized block braces that are the first code token on their source line, replace only their leading spaces/tabs with one tab per syntax level. Preserve blank lines, line endings, comment-only lines, directives, literal contents and expression continuations. Auto-property lists, simple enum interiors and initializer interiors retain their existing layout. Indentation composes with higher-priority layout replacements rather than creating overlapping edits; single-statement defer blocks keep their existing line layout. | Whitespace only. Depth comes from the statement/declaration structure; an over-indented sibling stays a sibling. No braces or other syntax tokens are introduced by this rule. Compiler/run tests check both paths of the misleading-indentation example. |
 
 Auto-property accessor lists (`{ get; private set; }`), simple enum case-list bodies, and object
 and array initializers are not expanded. Expression lambdas retain expression
@@ -166,15 +169,18 @@ $files = Get-Content .\Tests\BeefFormsRegressionFiles.txt | ForEach-Object { Joi
 .\Tests\Run-Integration.ps1 -RegressionFile $files
 ```
 
-Validated with the installed Beef compiler: Debug and Release builds, 60 formatter
-tests, all 50 BeefParser tests, and 303 integration assertions including the
-14-file BeefForms regression list (177 without optional files). Both Win32Backend.bf
-and Control.bf have been checked using temporary copies. Body-layout
-tests verify unchanged dangling-else binding, empty switch sections, nested case
-blocks, loop targets, and scoped destruction by compiling/running before and after.
+Validated with the installed Beef compiler: Debug builds and 66 formatter
+tests. Integration tests cover CLI behavior, source preservation, compiler/run
+behavior comparisons and idempotence; optional BeefForms regressions use temporary
+copies and verify that original files remain unchanged.
 
 `Tests/Measure-Scaling.ps1` reports median formatting times for generated sources
 of increasing sizes, using temporary files and checking idempotence. A Debug
 comparison on the same 2,000-method input measured about 3.0 seconds before the
 index changes and 0.13 seconds after; 4,000 methods took 0.22 seconds afterward.
 These measurements include process startup and the CLI's validation pass.
+
+Indentation was compared against the previous formatter on those 16 explicit
+BeefForms files using temporary copies. Only `src/Helpers/ScopedArray.bf` gained
+additional changes: four mixed tabs/spaces prefixes became three tabs. Original
+files remained unchanged; all 16 formatted copies passed a clean second check.

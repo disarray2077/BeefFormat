@@ -129,7 +129,7 @@ class FormatterTests
 		output.Clear();
 		Format("class C\n{\n\tvoid F(bool flag)\n\t{\n\t\twhile (flag) if (flag)\n\t\t{\n#if A\nTick();\n#else\nTock();\n#endif\n\t\t}\n\t}\n}\n", output);
 		Test.Assert(!output.Contains("while (flag)\n\t\t{"), output);
-		Test.Assert(output.Contains("#if A\nTick();\n#else\nTock();\n#endif"));
+		Test.Assert(output.Contains("#if A\n\t\t\t\tTick();\n#else\n\t\t\t\tTock();\n#endif"));
 	}
 
 	[Test]
