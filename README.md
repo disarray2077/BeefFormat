@@ -67,9 +67,9 @@ lines between statements.
 Auto-property accessor lists (`{ get; private set; }`), enum bodies, and object
 and array initializers are not expanded. Expression lambdas retain expression
 form; block lambdas retain block form and use BF001. No lambda form conversion
-is implemented. Block local functions are visited for block/body layout. Expression-bodied local
-methods and other expression blocks retain their internal layout unless an
-existing rule explicitly recognizes them. These are rule
+is implemented. Block and expression-bodied local methods are visited for the same method/body
+rules as member methods. Other expression blocks retain their internal layout
+unless an existing rule explicitly recognizes them. These are rule
 exclusions, rather than review findings.
 
 ## Analysis and preservation limits
@@ -141,9 +141,9 @@ that the original file remains unchanged. The behavior fixture also exercises
 an append-allocated collection, an inferred method-reference callback, struct
 primary-constructor values, and automatic property-finalizer disposal.
 
-Validated with the installed Beef compiler: Debug and Release builds, 47 formatter
-tests, all 42 BeefParser tests, and 172 integration assertions including an
-explicit regression file (163 without the optional file). Both Win32Backend.bf
+Validated with the installed Beef compiler: Debug and Release builds, 51 formatter
+tests, all 42 BeefParser tests, and 180 integration assertions including an
+explicit regression file (171 without the optional file). Both Win32Backend.bf
 and Control.bf have been checked using temporary copies. Body-layout
 tests verify unchanged dangling-else binding, empty switch sections, nested case
 blocks, loop targets, and scoped destruction by compiling/running before and after.

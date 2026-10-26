@@ -360,7 +360,7 @@ public class Formatter
 					}
 					ExpressionMember(header, i, semi, depth, method);
 					callable = !type && method && OrdinaryMemberHeader(header, i);
-					block = callable && ExplicitVoid(header, i) && CanUseStatement(i + 1, semi) && OnlySpace(mTokens[i - 1].End, mTokens[i].Start) && OnlySpace(mTokens[i].End, mTokens[i + 1].Start);
+					block = callable && ExplicitVoid(header, i);
 					i = semi + 1;
 					break;
 				}
@@ -455,28 +455,21 @@ public class Formatter
 
 	void ExpressionMember(int header, int arrow, int semi, int depth, bool method)
 	{
-		// Explicit void plus a call expression has statement semantics. Exclude
-		// scope allocations and bindings, whose lifetime requires semantic analysis.
-		if (method && ExplicitVoid(header, arrow) && CanUseStatement(arrow + 1, semi))
+		// Beef verifies explicit-void expression bodies as statements. Keep the
+		// complete expression and its semicolon in the same method body scope.
+		if (method && ExplicitVoid(header, arrow))
 		{
-			let body = scope String();
-			body.Append(Newline(mTokens[arrow].Start));
-			for (int n = 0; n < depth; n++)
-				body.Append('\t');
-			body.Append('{');
-			body.Append(Newline(mTokens[arrow].Start));
-			for (int n = 0; n <= depth; n++)
-				body.Append('\t');
-			body.Append(mSource.Substring(mTokens[arrow + 1].Start, mTokens[semi].End - mTokens[arrow + 1].Start));
-			body.Append(Newline(mTokens[arrow].Start));
-			for (int n = 0; n < depth; n++)
-				body.Append('\t');
-			body.Append('}');
-			if (OnlySpace(mTokens[arrow - 1].End, mTokens[arrow].Start) && OnlySpace(mTokens[arrow].End, mTokens[arrow + 1].Start))
-			{
-				Add(mTokens[arrow - 1].End, mTokens[semi].End, body, "BF002");
-				return;
-			}
+			int tail = mTokens[arrow].Start;
+			while (tail > mTokens[arrow - 1].End && IsSpace(mSource[tail - 1]))
+				tail--;
+			let opening = scope String();
+			IndentLine(opening, depth, tail);
+			opening.Append('{');
+			Add(tail, mTokens[arrow].End, opening, "BF002");
+			BodyGap(arrow, arrow + 1, depth + 1, "BF002");
+			QueueClosing(mTokens[semi].End, depth, "BF002");
+			Lambdas(arrow + 1, semi, depth + 1);
+			return;
 		}
 		bool simple = method && SimpleExpression(arrow + 1, semi);
 		if (method)
@@ -523,24 +516,16 @@ public class Formatter
 		return true;
 	}
 
-	bool CanUseStatement(int start, int end)
-	{
-		if (Kind(start) != .Identifier || Kind(start + 1) != .LParen || mPairs[start + 1] != end - 1)
-			return false;
-		for (int i = start; i < end; i++)
-		{
-			if (Kind(i) == .Scope || Kind(i) == .New || Kind(i) == .Delete || Kind(i) == .Bind || Kind(i) == .LCurly || Kind(i) == .Ref || Kind(i) == .Out || Kind(i) == .InterpolatedStringStart)
-				return false;
-		}
-		return true;
-	}
-
 	bool ExplicitVoid(int start, int end)
 	{
 		for (int i = start; i < end; i = Skip(i))
 		{
+			if (Kind(i) == .Delegate || Kind(i) == .Function)
+				return false;
+			if (Kind(i) == .Void && (Kind(i + 1) == .Identifier || Kind(i + 1) == .Operator))
+				return true;
 			if (Kind(i) == .LParen)
-				return i >= start + 2 && Kind(i - 2) == .Void && Kind(i - 1) == .Identifier;
+				return false;
 		}
 		return false;
 	}
@@ -672,6 +657,13 @@ public class Formatter
 			Statements(localBody, mPairs[localBody], depth, normalize);
 			return mPairs[localBody] + 1;
 		}
+		int arrow = LocalMethodArrow(start, end);
+		if (arrow >= 0)
+		{
+			int semi = ExpressionEnd(arrow + 1, end);
+			ExpressionMember(start, arrow, semi, depth, true);
+			return semi < end ? semi + 1 : end;
+		}
 		int semi = ExpressionEnd(start, end);
 		Lambdas(start, semi, depth);
 		return semi < end ? semi + 1 : end;
@@ -799,6 +791,21 @@ public class Formatter
 			if (!merged)
 				Add(position, position, closing, rule);
 		}
+	}
+
+	int LocalMethodArrow(int start, int end)
+	{
+		bool parameters = false;
+		for (int i = start; i < end; i = Skip(i))
+		{
+			if (Kind(i) == .Assign || Kind(i) == .Semi || Kind(i) == .Return || Kind(i) == .New || Kind(i) == .Scope || Kind(i) == .Append || Kind(i) == .Delete || Kind(i) == .LCurly)
+				return -1;
+			if (Kind(i) == .LParen && i >= start + 2 && (Kind(i - 1) == .Identifier || Kind(i - 1) == .RArrow))
+				parameters = true;
+			if (Kind(i) == .Bind)
+				return parameters ? i : -1;
+		}
+		return -1;
 	}
 
 	bool SingleDeferStatement(int open, int close)

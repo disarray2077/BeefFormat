@@ -83,6 +83,17 @@ Assert-True ((Get-FileHash -LiteralPath $membersFile).Hash -eq $membersHash) 'Me
 Invoke-Formatter 0 @('--write', $membersFile)
 Assert-True ([IO.File]::ReadAllText($membersFile).Contains("mSuppressChars;`r`n`r`n`tpublic ~this()")) 'Member separator was not inserted'
 Invoke-Formatter 0 @($membersFile)
+$voidFile = Join-Path $fixtureRoot 'void-expression.bf'
+Write-Utf8 $voidFile "class VoidExpression`n{`n`tvoid NotifyPaint()=>NeedsPaint = false;`n}`n"
+$voidHash = (Get-FileHash -LiteralPath $voidFile).Hash
+Invoke-Formatter 1 @($voidFile)
+Assert-True ($script:formatterOutput.Contains('BF002:')) 'Missing void-expression diagnostic'
+Assert-True ((Get-FileHash -LiteralPath $voidFile).Hash -eq $voidHash) 'Void-expression check wrote input'
+Invoke-Formatter 1 @('--diff', $voidFile)
+Assert-True ((Get-FileHash -LiteralPath $voidFile).Hash -eq $voidHash) 'Void-expression diff wrote input'
+Invoke-Formatter 0 @('--write', $voidFile)
+Assert-True ([IO.File]::ReadAllText($voidFile).Contains("void NotifyPaint()`n`t{`n`t`tNeedsPaint = false;`n`t}")) 'Void assignment was not converted to a block'
+Invoke-Formatter 0 @($voidFile)
 $layoutFile = Join-Path $fixtureRoot 'body-layout.bf'
 Write-Utf8 $layoutFile "class C`n{`n`tvoid F(bool flag, int kind)`n`t{`n`t`tif (flag) Log();`n`t`tswitch (kind)`n`t`t{`n`t`tcase 1: Log();`n`t`tdefault:`n`t`t}`n`t}`n}`n"
 $layoutHash = (Get-FileHash -LiteralPath $layoutFile).Hash
@@ -216,6 +227,21 @@ class AutoOwned { public Owner Value { get; set; } ~ delete _; public this() { V
 class Node { public Node Parent; }
 class Target : Node { }
 class LifetimeOwner { public ~this() { Program.LifetimeValue++; } }
+interface IReset { void Reset(); }
+class ExpressionCases : IReset
+{
+    public int Count;
+    public void Assign() => Count = 1;
+    public void Compound() => Count += 2;
+    public void Postfix() => Count++;
+    public void Prefix() => ++Count;
+    public void Generic<T>() => Count += 3;
+    void IReset.Reset() => Count = 5;
+    public void NullConditional(ExpressionCases other) => other?.Assign();
+    public void RunLocal() { void Local() => Count += 2; Local(); }
+    void Consume(Owner owner) { Count++; }
+    public void Scoped() => Consume(scope Owner());
+}
 struct Returned { public int Value; public this(int value) { Value = value; } }
 class Program
 {
@@ -271,6 +297,13 @@ class Program
     public static int Main()
     {
         Pair pair = .(3, 4);
+        let expressions = scope ExpressionCases();
+        expressions.Assign(); expressions.Compound(); expressions.Postfix(); expressions.Prefix(); expressions.Generic<int>(); expressions.RunLocal();
+        bool expressionCorrect = expressions.Count == 10;
+        ((IReset)expressions).Reset();
+        expressionCorrect &= expressions.Count == 5;
+        expressions.NullConditional(null); expressions.NullConditional(expressions); expressions.Scoped();
+        expressionCorrect &= expressions.Count == 2;
         let target = scope Target();
         let node = scope Node();
         node.Parent = target;
@@ -283,7 +316,7 @@ class Program
         let callbackValue = callback(appended.Values[0]);
         bool layoutCorrect = Dangling(true, true) == 1 && Dangling(true, false) == 2 && Dangling(false, false) == 3 && Section(0, false) == 10 && Section(1, true) == -1 && Section(2, true) == 20 && Section(2, false) == 30 && Section(3, true) == 40 && Section(3, false) == 50 && Section(4, false) == 60 && Loops() == 4;
         Console.WriteLine("{}:{}:{}:{}:{}:{}:{}", Value, Choose(), ChooseElse(), Loop(), Destroyed, callbackValue, layoutCorrect);
-        return (nestedCorrect && pair.X == 3 && pair.Y == 4 && Value == 3 && Choose() == 2 && ChooseElse() == 5 && Loop() == 4 && Destroyed == 4 && callbackValue == 14 && layoutCorrect) ? 0 : 1;
+        return (expressionCorrect && nestedCorrect && pair.X == 3 && pair.Y == 4 && Value == 3 && Choose() == 2 && ChooseElse() == 5 && Loop() == 4 && Destroyed == 5 && callbackValue == 14 && layoutCorrect) ? 0 : 1;
     }
 }
 '@

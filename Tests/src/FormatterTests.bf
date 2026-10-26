@@ -9,6 +9,53 @@ namespace BeefFormat.Tests;
 class FormatterTests
 {
 	[Test]
+	public static void VoidExpressionFormsBecomeBlocks()
+	{
+		String[?] expressions = .("NeedsPaint = false", "count += 2", "count++", "++count", "this.Tick()", "value?.Tick()", "Tick<int>()", "Tick(ref count)", "Tick(scope Owner())", "value = new Owner()", "callback = => Handler");
+		for (let expression in expressions)
+		{
+			let input = scope String("class C\n{\n\tvoid F() => ");
+			input.Append(expression);
+			input.Append(";\n}\n");
+			let output = scope String();
+			Format(input, output);
+			let expected = scope String("void F()\n\t{\n\t\t");
+			expected.Append(expression);
+			expected.Append(";\n\t}");
+			Test.Assert(output.Contains(expected), output);
+		}
+	}
+
+	[Test]
+	public static void VoidMethodsWithGenericAndQualifiedNames()
+	{
+		let output = scope String();
+		Format("interface I { void Run(); } class C : I { [Inline] void Reset<T>() => count = 0; void I.Run() => count++; void Outer() { void Local<T>() => count += 2; Local<int>(); } void* Pointer() => handle; int Other() => count; }", output);
+		Test.Assert(output.Contains("void Reset<T>()\n\t{\n\t\tcount = 0;\n\t}"), output);
+		Test.Assert(output.Contains("void I.Run()\n\t{\n\t\tcount++;\n\t}"));
+		Test.Assert(output.Contains("void Local<T>()\n\t\t{\n\t\t\tcount += 2;\n\t\t}"));
+		Test.Assert(output.Contains("void* Pointer() => handle;"));
+		Test.Assert(output.Contains("int Other() => count;"));
+	}
+
+	[Test]
+	public static void VoidRewritePreservesCommentsAndLiteralContents()
+	{
+		let output = scope String();
+		Format("class C\r\n{\r\n\tvoid F() /* header */ => /* body */ value = @\"ç {literal}\"; // trailing\r\n\tvoid G() // signature\r\n => // expression\r\n value++;\r\n}\r\n", output);
+		Test.Assert(output.Contains("void F() /* header */\r\n\t{ /* body */\r\n\t\tvalue = @\"ç {literal}\"; // trailing\r\n\t}"), output);
+		Test.Assert(output.Contains("void G() // signature\r\n\t{ // expression\r\n\t\tvalue++;\r\n\t}"));
+	}
+
+	[Test]
+	public static void VoidRewriteFormatsNestedLambdaBlocks()
+	{
+		let output = scope String();
+		Format("class C { void F() => Invoke(() => { Tick(); Tock(); }); }", output);
+		Test.Assert(output.Contains("void F()\n\t{\n\t\tInvoke(() =>\n\t\t{\n\t\t\tTick();\n\t\t\tTock();\n\t\t});\n\t}"), output);
+	}
+
+	[Test]
 	public static void MemberKindsHaveRequiredSeparators()
 	{
 		let output = scope String();
