@@ -9,3 +9,6 @@ recovery/
 *.tmp
 *.swp
 *~
+
+# Local agent instructions
+/AGENTS.md
