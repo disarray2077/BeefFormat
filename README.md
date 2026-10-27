@@ -28,10 +28,22 @@ must still be valid Unicode. Decimal reals may contain digit separators.
 .\build\Debug_Win64\BeefFormat\BeefFormat.exe --check path\to\Source.bf
 .\build\Debug_Win64\BeefFormat\BeefFormat.exe --diff path\to\Source.bf
 .\build\Debug_Win64\BeefFormat\BeefFormat.exe --write path\to\directory
+.\build\Debug_Win64\BeefFormat\BeefFormat.exe -w "src\*.bf"
+.\build\Debug_Win64\BeefFormat\BeefFormat.exe -d "*.bf"
 ```
 
-At least one file or directory is required. Modes are mutually exclusive. Use
+At least one file, directory or filename pattern is required. `-c`, `-d`, and `-w`
+are aliases for `--check`, `--diff`, and `--write`; `-h` aliases `--help`.
+Modes are mutually exclusive, including mixtures of short and long options. Use
 `--include-tests` to traverse `Tests`, and `--` before targets beginning with `-`.
+Quote wildcard targets so BeefFormat expands them itself. `*` and `?` use the
+filesystem's filename matching; only the final path component may contain
+wildcards (`"*.bf"`, `"src\*.bf"`, `"Control?.bf"`). Patterns select matching files
+in one directory; directory targets recurse. Wildcard directory components are
+rejected, and patterns matching no files report an error (exit 2). Pattern parents
+retain directory exclusions, with `--include-tests` enabling Tests directories.
+Discovered links are skipped. Pattern matches and explicit targets share the same
+sorting and deduplication, so overlapping targets process each file once.
 Traversal sorts and deduplicates absolute file paths, searches for `*.bf`, and
 excludes `Tests`, `build`, `dist`, `generated`, `bin`, `obj`, `BeefSpace`, `.git`,
 `.svn`, `.hg`, and `recovery` directories. Build and Tests exclusions also apply to explicit
@@ -171,9 +183,9 @@ $files = Get-Content .\Tests\BeefFormsRegressionFiles.txt | ForEach-Object { Joi
 ```
 
 Validated with the installed Beef compiler: Debug and Release builds, 79 formatter
-tests, all 50 BeefParser tests, and 338 integration assertions including the
+tests, all 50 BeefParser tests, and 368 integration assertions including the
 14-file BeefForms regression list plus Control.bf, Win32Backend.bf and Utils.bf
-(185 without optional files). An additional run passed 230 assertions with temporary
+(215 without optional files). An earlier run passed 230 assertions with temporary
 copies of SDLBackend.bf, ProgressBar.SDL.bf, SDLWindowSession.Rendering.bf,
 ComponentCollection.bf and InputEventArgs.bf. Both Win32Backend.bf
 and Control.bf have been checked using temporary copies. Body-layout

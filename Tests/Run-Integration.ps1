@@ -27,6 +27,56 @@ Invoke-Formatter 2 @()
 Invoke-Formatter 2 @('--check', '--write', $fixtureRoot)
 Invoke-Formatter 2 @('--unknown')
 Invoke-Formatter 2 @((Join-Path $fixtureRoot 'missing.bf'))
+Invoke-Formatter 0 @('-h')
+Assert-True ($script:formatterOutput.Contains('-w')) 'Short options missing from usage'
+Invoke-Formatter 0 @('--help')
+Invoke-Formatter 2 @('-w')
+Invoke-Formatter 2 @('-w', '--check', $fixtureRoot)
+Invoke-Formatter 2 @('-c', '-d', $fixtureRoot)
+Invoke-Formatter 2 @('-w', '--write', $fixtureRoot)
+$globRoot = Join-Path $fixtureRoot 'wildcard files'
+New-Item -ItemType Directory -Path (Join-Path $globRoot 'nested') -Force | Out-Null
+$globA = Join-Path $globRoot 'a.bf'
+$globB = Join-Path $globRoot 'b.bf'
+$globNested = Join-Path $globRoot 'nested\child.bf'
+$globText = Join-Path $globRoot 'other.txt'
+foreach ($file in @($globA, $globB, $globNested, $globText)) {
+    Write-Utf8 $file 'class C { void F() { return; } }'
+}
+$globPattern = Join-Path $globRoot '*.bf'
+$globHash = (Get-FileHash -LiteralPath $globA).Hash
+Invoke-Formatter 1 @('-c', $globPattern)
+Assert-True ($script:formatterOutput.Contains('a.bf:') -and $script:formatterOutput.Contains('b.bf:')) 'Wildcard omitted matching files'
+Assert-True (-not $script:formatterOutput.Contains('child.bf')) 'File wildcard recursed into subdirectories'
+Assert-True ((Get-FileHash -LiteralPath $globA).Hash -eq $globHash) 'Short check wrote wildcard input'
+Assert-True ((Get-FileHash -LiteralPath $globB).Hash -eq $globHash) 'Short check wrote second wildcard input'
+Invoke-Formatter 1 @('-d', $globPattern, $globA)
+Assert-True (([regex]::Matches($script:formatterOutput, '(?m)^--- ')).Count -eq 2) 'Overlapping wildcard and explicit targets were not deduplicated'
+Assert-True ($script:formatterOutput.IndexOf('a.bf') -lt $script:formatterOutput.IndexOf('b.bf')) 'Wildcard processing order was not sorted'
+Assert-True ((Get-FileHash -LiteralPath $globA).Hash -eq $globHash) 'Short diff wrote wildcard input'
+Invoke-Formatter 0 @('-w', $globPattern)
+Invoke-Formatter 0 @('-c', $globPattern)
+Assert-True ((Get-FileHash -LiteralPath $globNested).Hash -eq $globHash) 'File wildcard wrote a nested file'
+Assert-True ((Get-FileHash -LiteralPath $globText).Hash -eq $globHash) 'File wildcard wrote an unmatched file'
+Push-Location $globRoot
+try {
+    Invoke-Formatter 0 @('-c', '*.bf')
+    Invoke-Formatter 0 @('-c', '?.bf')
+    Invoke-Formatter 2 @('-w', 'missing*.bf')
+    Assert-True ($script:formatterOutput.Contains('pattern matched no files')) 'Unmatched wildcard did not report an error'
+    Invoke-Formatter 2 @('-c', 'nest*\*.bf')
+    Assert-True ($script:formatterOutput.Contains('only in the file name')) 'Unsupported directory wildcard was not explained'
+} finally {
+    Pop-Location
+}
+$globTests = Join-Path $globRoot 'Tests'
+New-Item -ItemType Directory -Path $globTests | Out-Null
+$globTestFile = Join-Path $globTests 'input.bf'
+Write-Utf8 $globTestFile 'class C { void F() { return; } }'
+Invoke-Formatter 0 @('-w', (Join-Path $globTests '*.bf'))
+Assert-True ((Get-FileHash -LiteralPath $globTestFile).Hash -eq $globHash) 'Wildcard bypassed Tests exclusion'
+Invoke-Formatter 0 @('-w', '--include-tests', (Join-Path $globTests '*.bf'))
+Assert-True ((Get-FileHash -LiteralPath $globTestFile).Hash -ne $globHash) 'Wildcard ignored include-tests'
 $sample = Join-Path $fixtureRoot 'sample.bf'
 Write-Utf8 $sample 'class C { int F() { return 1; } }'
 $before = (Get-FileHash -LiteralPath $sample).Hash

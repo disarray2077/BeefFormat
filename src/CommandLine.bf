@@ -9,11 +9,74 @@ public static class CommandLine
 {
 	static void Usage()
 	{
-		Console.WriteLine("Usage: BeefFormat [--check|--diff|--write] [--include-tests] <file.bf|directory> ...");
+		Console.WriteLine("Usage: BeefFormat [--check|-c|--diff|-d|--write|-w] [--include-tests] <file.bf|directory|pattern> ...");
+		Console.WriteLine("File-name patterns support * and ? (for example, \"src/*.bf\"); quote patterns to expand them in BeefFormat.");
+		Console.WriteLine("Use --help or -h for usage. Checking is the default.");
 	}
 
 	static bool Excluded(StringView name, bool tests)
 		=> (!tests && name.Equals("Tests", true)) || name.Equals("build", true) || name.Equals("dist", true) || name.Equals("generated", true) || name.Equals("bin", true) || name.Equals("obj", true) || name.Equals(".git", true) || name.Equals(".svn", true) || name.Equals(".hg", true) || name.Equals("BeefSpace", true) || name.Equals("recovery", true);
+
+	static bool ExcludedDirectory(StringView path, bool tests)
+	{
+		let normalized = scope String();
+		Path.GetFullPath(path, normalized);
+		while (normalized.Length > 3 && Path.IsDirectorySeparatorChar(normalized[normalized.Length - 1]))
+			normalized.RemoveFromEnd(1);
+		let name = scope String();
+		Path.GetFileName(normalized, name);
+		return Excluded(name, tests);
+	}
+
+	static void CollectPattern(StringView pattern, bool tests, List<String> files, ref bool error)
+	{
+		let full = scope String();
+		Path.GetFullPath(pattern, full);
+		let directory = scope String();
+		if (Path.GetDirectoryPath(full, directory) case .Err)
+		{
+			Console.Error.WriteLine("{}: error: cannot resolve pattern directory", pattern);
+			error = true;
+			return;
+		}
+		if (directory.Contains('*') || directory.Contains('?'))
+		{
+			Console.Error.WriteLine("{}: error: wildcards are supported only in the file name", pattern);
+			error = true;
+			return;
+		}
+		if (directory.IsEmpty)
+			directory.Set(".");
+		if (ExcludedDirectory(directory, tests))
+			return;
+		let search = new String(full);
+		Platform.BfpFileResult status = .Ok;
+		let handle = Platform.Hook.BfpFindFileData_FindFirstFile(search.CStr(), .Files, &status);
+		var entries = FileEnumerator(search, handle);
+		defer entries.Dispose();
+		if (handle == null && status != .NoResults && status != .NotFound && status != .Ok)
+		{
+			Console.Error.WriteLine("{}: error: cannot enumerate pattern ({})", pattern, status);
+			error = true;
+			return;
+		}
+		bool matched = false;
+		while (entries.MoveNext())
+		{
+			let entry = entries.Current;
+			if (entry.IsDirectory || entry.GetFileAttributes().HasFlag(.SymLink))
+				continue;
+			matched = true;
+			let child = scope String();
+			entry.GetFilePath(child);
+			Collect(child, tests, files, ref error);
+		}
+		if (!matched)
+		{
+			Console.Error.WriteLine("{}: error: pattern matched no files", pattern);
+			error = true;
+		}
+	}
 
 	static void Collect(StringView path, bool tests, List<String> files, ref bool error)
 	{
@@ -35,13 +98,7 @@ public static class CommandLine
 			error = true;
 			return;
 		}
-		let normalized = scope String();
-		Path.GetFullPath(path, normalized);
-		while (normalized.Length > 3 && Path.IsDirectorySeparatorChar(normalized[normalized.Length - 1]))
-			normalized.RemoveFromEnd(1);
-		let directoryName = scope String();
-		Path.GetFileName(normalized, directoryName);
-		if (Excluded(directoryName, tests))
+		if (ExcludedDirectory(path, tests))
 			return;
 		let search = new String();
 		Path.Combine(search, path, "*");
@@ -248,7 +305,7 @@ public static class CommandLine
 				positional = true;
 				continue;
 			}
-			if (!positional && (arg == "--check" || arg == "--diff" || arg == "--write"))
+			if (!positional && (arg == "--check" || arg == "-c" || arg == "--diff" || arg == "-d" || arg == "--write" || arg == "-w"))
 			{
 				if (selected)
 				{
@@ -256,14 +313,14 @@ public static class CommandLine
 					return 2;
 				}
 				selected = true;
-				mode = arg == "--write" ? 2 : arg == "--diff" ? 1 : 0;
+				mode = arg == "--write" || arg == "-w" ? 2 : arg == "--diff" || arg == "-d" ? 1 : 0;
 			}
 			else if (!positional && arg == "--include-tests")
 				tests = true;
 			else if (!positional && arg.StartsWith('-'))
 			{
 				Usage();
-				return arg == "--help" ? 0 : 2;
+				return arg == "--help" || arg == "-h" ? 0 : 2;
 			}
 			else
 				targets.Add(arg);
@@ -277,7 +334,12 @@ public static class CommandLine
 		defer ClearAndDeleteItems(files);
 		bool error = false;
 		for (let target in targets)
-			Collect(target, tests, files, ref error);
+		{
+			if (target.Contains('*') || target.Contains('?'))
+				CollectPattern(target, tests, files, ref error);
+			else
+				Collect(target, tests, files, ref error);
+		}
 		files.Sort(scope (a, b) => String.Compare(a, b, false));
 		int result = error ? 2 : 0;
 		for (let file in files)
