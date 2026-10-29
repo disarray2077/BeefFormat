@@ -9,9 +9,39 @@ public static class CommandLine
 {
 	static void Usage()
 	{
-		Console.WriteLine("Usage: BeefFormat [--check|-c|--diff|-d|--write|-w] [--include-tests] <file.bf|directory|pattern> ...");
-		Console.WriteLine("File-name patterns support * and ? (for example, \"src/*.bf\"); quote patterns to expand them in BeefFormat.");
-		Console.WriteLine("Use --help or -h for usage. Checking is the default.");
+		Console.WriteLine("""
+			BeefFormat - source formatter and syntax tidier for Beef
+
+			Usage:
+			  BeefFormat [options] <target> ...
+
+			Modes (choose one):
+			  -c, --check          Report formatting differences (default).
+			  -d, --diff           Preview a unified diff without changing files.
+			  -w, --write          Apply formatting changes.
+
+			Options:
+			      --include-tests  Include Tests directories during traversal.
+			  -h, --help           Show this help.
+			  --                   Treat remaining arguments as targets.
+
+			Targets:
+			  Accepts files, directories, and quoted filename patterns.
+			  Directories are searched recursively for .bf files, skipping Tests,
+			  build output, and version-control directories.
+			  Wildcards (* and ?) match filenames in one directory, without recursion.
+			  Quote patterns so BeefFormat expands them. Unmatched patterns are errors.
+
+			Examples:
+			  BeefFormat src
+			  BeefFormat -d "src/*.bf"
+			  BeefFormat -w src/Source.bf
+
+			Exit status:
+			  0  No formatting differences remain.
+			  1  Formatting differences were found in check or diff mode.
+			  2  Usage or processing error.
+			""");
 	}
 
 	static bool Excluded(StringView name, bool tests)
