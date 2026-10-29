@@ -5,5 +5,5 @@ StartupProject = "BeefFormat"
 
 [Projects]
 BeefFormat = {Path = "."}
-BeefParser = {Path = "../BeefParser"}
+BeefParser = {Git = "https://github.com/disarray2077/BeefParser"}
 "BeefFormat.Tests" = {Path = "Tests"}
