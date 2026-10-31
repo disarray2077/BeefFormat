@@ -175,7 +175,7 @@ public class Formatter
 		Add(start, end, desired, rule);
 	}
 
-	void BodyGap(int left, int right, int indent, StringView rule, bool braced = false)
+	void BodyGap(int left, int right, int indent, StringView rule, bool braced = false, bool preserveBlank = false)
 	{
 		if (left < 0 || right >= mTokens.Count)
 			return;
@@ -197,6 +197,18 @@ public class Formatter
 		while (tail > start && IsSpace(mSource[tail - 1]))
 			tail--;
 		let desired = scope String(Newline(tail));
+		if (preserveBlank)
+		{
+			int breaks = 0;
+			for (int p = tail; p < end; p++)
+			{
+				if (LineBreakAt(p) && ++breaks == 2)
+				{
+					desired.Append(Newline(p));
+					break;
+				}
+			}
+		}
 		for (int n = 0; n < indent; n++)
 			desired.Append('\t');
 		if (braced)
@@ -1101,7 +1113,7 @@ public class Formatter
 				Fail("unsupported switch label boundary");
 				return;
 			}
-			BodyGap(i - 1, i, depth, "BF008");
+			BodyGap(i - 1, i, depth, "BF008", preserveBlank: i > open + 1);
 			int colon = i + 1;
 			int conditional = 0;
 			while (colon < close)
