@@ -264,13 +264,15 @@ foreach ($mode in @('--check', '--diff', '--write')) {
     Assert-True ((Get-FileHash -LiteralPath $branchFile).Hash -eq $branchHash) 'Malformed conditional syntax was written'
 }
 $variants = [Text.StringBuilder]::new()
-for ($i = 0; $i -lt 9; $i++) {
+for ($i = 0; $i -lt 24; $i++) {
     [void]$variants.Append("#if FLAG$i`nclass C$i {}`n#endif`n")
 }
 Write-Utf8 $branchFile $variants.ToString()
 $branchHash = (Get-FileHash -LiteralPath $branchFile).Hash
-Invoke-Formatter 2 @('--write', $branchFile)
-Assert-True ((Get-FileHash -LiteralPath $branchFile).Hash -eq $branchHash) 'Variant limit wrote input'
+Invoke-Formatter 1 @('--check', $branchFile)
+Assert-True ((Get-FileHash -LiteralPath $branchFile).Hash -eq $branchHash) 'Independent conditional check wrote input'
+Invoke-Formatter 0 @('--write', $branchFile)
+Invoke-Formatter 0 @('--check', $branchFile)
 foreach ($badBytes in @([byte[]](0xFF, 0xFE, 0, 0xD8), [byte[]](0xFF, 0xFE, 0x41), [byte[]](0xFE, 0xFF, 0xDC, 0), [byte[]](0, 0, 0xFE, 0xFF, 0, 0x11, 0, 0), [byte[]](0xC0, 0x80), [byte[]](0xED, 0xA0, 0x80), [byte[]](0xF4, 0x90, 0x80, 0x80), [byte[]](0xE2, 0x28, 0xA1))) {
     [IO.File]::WriteAllBytes($invalid, $badBytes)
     $originalHash = (Get-FileHash -LiteralPath $invalid).Hash
@@ -542,7 +544,15 @@ class Program
     {
         Run();
         Pair pair = .(7);
-        int expected = Choose(true) - 95;
+        int expected =
+#if FIRST
+2
+#elif SECOND
+3
+#else
+4
+#endif
+;
         Console.WriteLine("{}:{}:{}:{}", Total, Destroyed, Choose(true), pair.X);
         return Total == expected && Destroyed == 1 && Choose(false) == 0 && Choose(true) == expected + 95 && pair.X == 7 ? 0 : 1;
     }

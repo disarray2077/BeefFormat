@@ -76,6 +76,52 @@ class ConditionalSyntaxTests
 		Test.Assert(output.Contains("enum E59\n{\n\tOne,\n\tTwo\n}"), output);
 	}
 
+	[Test]
+	public static void IndependentConditionalMembersDoNotFormAWholeFileProduct()
+	{
+		let source = scope String("#if OUTER\n[Attr(1)]\n#endif\nclass C\n{\n");
+		for (int i = 0; i < 24; i++)
+			source.AppendF("#if A{}\n[Inline]\n#endif\nvoid F{}() => Call(\n#if B{}\n1\n#else\n2\n#endif\n);\n", i, i, i);
+		source.Append("}");
+		let tokens = scope List<SourceToken>();
+		Test.Assert((scope Lexer(source, false)).GetSourceTokens(tokens) case .Ok);
+		let branches = scope List<ConditionalBranch>();
+		defer ClearAndDeleteItems(branches);
+		let error = scope String();
+		Test.Assert(ConditionalBranches.Expand(source, tokens, branches, error) case .Ok);
+		Test.Assert(branches.Count <= 2 + 24 * 6, scope String()..AppendF("{} branches", branches.Count));
+		let output = scope String();
+		Format(source, output);
+		Test.Assert(output.Contains("void F23()\n\t{"), output);
+	}
+
+	[Test]
+	public static void ChoicesWithinOneExpressionRemainExhaustive()
+	{
+		let source = scope String("class C { int F() => Call(\n#if A\n1\n#else\n2\n#endif\n,\n#if B\n3\n#else\n4\n#endif\n); }");
+		let tokens = scope List<SourceToken>();
+		Test.Assert((scope Lexer(source, false)).GetSourceTokens(tokens) case .Ok);
+		let branches = scope List<ConditionalBranch>();
+		defer ClearAndDeleteItems(branches);
+		let error = scope String();
+		Test.Assert(ConditionalBranches.Expand(source, tokens, branches, error) case .Ok);
+		Test.Assert(branches.Count == 4);
+		let output = scope String();
+		Format(source, output);
+	}
+
+	[Test]
+	public static void IndependentChoicesCannotHideAMalformedLocalCombination()
+	{
+		let source = scope String("class C { void F() => Call(\n#if A\n1 +\n#else\n1\n#endif\n#if B\n2\n#endif\n);");
+		for (int i = 0; i < 12; i++)
+			source.AppendF("\n#if C{}\n[Inline]\n#endif\nvoid G{}() => Work();", i, i);
+		source.Append("}");
+		let formatter = scope Formatter();
+		Test.Assert(formatter.Analyze(source) case .Err);
+		Test.Assert(formatter.Edits.IsEmpty);
+	}
+
 	static void ProtectedText(String source, String output)
 	{
 		let tokens = scope List<SourceToken>();
