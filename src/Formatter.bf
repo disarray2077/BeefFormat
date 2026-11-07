@@ -44,11 +44,9 @@ public class Formatter
 	}
 
 	HashSet<SyntaxRewrite> mBranchRewrites;
-	HashSet<SyntaxRewrite> mPreservedRewrites = new .() ~ delete _;
-	bool mPlanning;
-	bool mCollectGaps;
-	HashSet<int> mOuterAngleBodies = new .() ~ delete _;
-	Dictionary<int, SourceEdit> mGapRequirements = new .() ~ DeleteDictionaryAndValues!(_);
+	HashSet<SyntaxRewrite> mPreservedRewrites;
+	HashSet<int> mOuterAngleBodies;
+	Dictionary<int, SourceEdit> mGapRequirements;
 
 	struct LineIndent
 	{
@@ -155,9 +153,9 @@ public class Formatter
 
 	void Add(int start, int end, StringView text, StringView rule)
 	{
-		if (mPlanning)
+		if (mBranchRewrites != null)
 			return;
-		if (mCollectGaps && OnlySpace(start, end) && Whitespace(text))
+		if (mGapRequirements != null && OnlySpace(start, end) && Whitespace(text))
 		{
 			if (mGapRequirements.TryGetValue(start, let requirement))
 			{
@@ -353,7 +351,7 @@ public class Formatter
 
 	void QueueIndent(int token, int depth)
 	{
-		if (mPlanning || token < 0 || token >= mTokens.Count)
+		if (mBranchRewrites != null || token < 0 || token >= mTokens.Count)
 			return;
 		int end = mTokens[token].Start;
 		int start = end;
@@ -497,8 +495,19 @@ public class Formatter
 	{
 		// Outer angle tokens can be operators or generic delimiters. Preserve
 		// these lists until their expression boundaries can be resolved exactly.
-		if (mOuterAngleBodies.Contains(mTokens[open].Start))
-			return;
+		if (mOuterAngleBodies != null)
+		{
+			if (mOuterAngleBodies.Contains(mTokens[open].Start))
+				return;
+		}
+		else
+		{
+			for (int i = open + 1; i < close; i = Skip(i))
+			{
+				if (Kind(i) == .LArrow || Kind(i) == .RArrow)
+					return;
+			}
+		}
 		QueueIndent(open, depth);
 		QueueIndent(close, depth);
 		BodyGap(open - 1, open, depth, "BF012");
@@ -1070,7 +1079,7 @@ public class Formatter
 
 	void QueueClosing(int position, int depth, StringView rule)
 	{
-		if (mPlanning)
+		if (mBranchRewrites != null)
 			return;
 		let brace = ClosingBrace() { Position = ClosingPosition(position), Depth = depth, Rule = rule };
 		if (mClosingKeys.Add(brace))
@@ -1257,9 +1266,9 @@ public class Formatter
 	bool RecordRewrite(int start, int end, int closing, int depth, StringView rule)
 	{
 		let rewrite = SyntaxRewrite() { Start = start, End = end, Closing = closing, Depth = depth, Rule = rule };
-		if (mPlanning)
+		if (mBranchRewrites != null)
 			mBranchRewrites.Add(rewrite);
-		return !mPreservedRewrites.Contains(rewrite);
+		return mPreservedRewrites == null || !mPreservedRewrites.Contains(rewrite);
 	}
 
 	void PreserveDisputedRewrites(List<ConditionalBranch> branches, List<HashSet<SyntaxRewrite>> rewrites)
@@ -1290,13 +1299,6 @@ public class Formatter
 	{
 		mTokens.Clear();
 		mPairs.Clear();
-		mOuterAngleBodies.Clear();
-		mPreservedRewrites.Clear();
-		mPlanning = false;
-		mCollectGaps = true;
-		for (let requirement in mGapRequirements.Values)
-			delete requirement;
-		mGapRequirements.Clear();
 		mEditsByStart.Clear();
 		ClearAndDeleteItems(Edits);
 		Error.Clear();
@@ -1334,47 +1336,64 @@ public class Formatter
 		let branches = scope List<ConditionalBranch>();
 		defer ClearAndDeleteItems(branches);
 		Try!(ConditionalBranches.Expand(source, all, branches, Error));
-		// Union exclusions before any branch emits edits to a shared body.
-		let delimiters = scope List<SourceToken>();
-		for (let branch in branches)
+		if (branches.Count == 1)
+			Try!(AnalyzeBranch(branches[0]));
+		else
 		{
-			delimiters.Clear();
-			for (let token in branch.Tokens)
+			let outerAngleBodies = scope HashSet<int>();
+			let preservedRewrites = scope HashSet<SyntaxRewrite>();
+			let gapRequirements = scope Dictionary<int, SourceEdit>();
+			mOuterAngleBodies = outerAngleBodies;
+			mPreservedRewrites = preservedRewrites;
+			mGapRequirements = gapRequirements;
+			defer
 			{
-				if ((token.Type == .LArrow || token.Type == .RArrow) && !delimiters.IsEmpty && delimiters.Back.Type == .LCurly)
-					mOuterAngleBodies.Add(delimiters.Back.Start);
-				if (token.Type == .LParen || token.Type == .LBracket || token.Type == .LCurly)
-					delimiters.Add(token);
-				if ((token.Type == .RParen || token.Type == .RBracket || token.Type == .RCurly) && !delimiters.IsEmpty)
-					delimiters.PopBack();
+				mOuterAngleBodies = null;
+				mPreservedRewrites = null;
+				mGapRequirements = null;
+				for (let requirement in gapRequirements.Values)
+					delete requirement;
 			}
-		}
-		let rewrites = scope List<HashSet<SyntaxRewrite>>();
-		defer
-		{
+			// Union exclusions before any branch emits edits to a shared body.
+			let delimiters = scope List<SourceToken>();
+			for (let branch in branches)
+			{
+				delimiters.Clear();
+				for (let token in branch.Tokens)
+				{
+					if ((token.Type == .LArrow || token.Type == .RArrow) && !delimiters.IsEmpty && delimiters.Back.Type == .LCurly)
+						mOuterAngleBodies.Add(delimiters.Back.Start);
+					if (token.Type == .LParen || token.Type == .LBracket || token.Type == .LCurly)
+						delimiters.Add(token);
+					if ((token.Type == .RParen || token.Type == .RBracket || token.Type == .RCurly) && !delimiters.IsEmpty)
+						delimiters.PopBack();
+				}
+			}
+			let rewrites = scope List<HashSet<SyntaxRewrite>>();
+			defer
+			{
+				mBranchRewrites = null;
+				ClearAndDeleteItems(rewrites);
+			}
+			for (let branch in branches)
+			{
+				mBranchRewrites = new .();
+				rewrites.Add(mBranchRewrites);
+				Try!(AnalyzeBranch(branch));
+			}
+			PreserveDisputedRewrites(branches, rewrites);
 			mBranchRewrites = null;
-			ClearAndDeleteItems(rewrites);
-		}
-		mPlanning = true;
-		for (let branch in branches)
-		{
-			mBranchRewrites = new .();
-			rewrites.Add(mBranchRewrites);
-			Try!(AnalyzeBranch(branch));
-		}
-		PreserveDisputedRewrites(branches, rewrites);
-		mPlanning = false;
-		for (let branch in branches)
-			Try!(AnalyzeBranch(branch));
-		for (let requirement in mGapRequirements.Values)
-		{
-			if (requirement != null)
-				CommitEdit(requirement.Start, requirement.End, requirement.Text, requirement.Rule);
+			for (let branch in branches)
+				Try!(AnalyzeBranch(branch));
+			for (let requirement in gapRequirements.Values)
+			{
+				if (requirement != null)
+					CommitEdit(requirement.Start, requirement.End, requirement.Text, requirement.Rule);
+			}
 		}
 		ValidateEdits();
 		if (mFailed)
 			return .Err;
-		mCollectGaps = false;
 		CollapseBlankLines(all);
 		CloseBodies();
 		if (mFailed)

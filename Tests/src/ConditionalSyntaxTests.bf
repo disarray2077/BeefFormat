@@ -122,6 +122,40 @@ class ConditionalSyntaxTests
 		Test.Assert(formatter.Edits.IsEmpty);
 	}
 
+	[Test]
+	public static void AnalyzerReuseAlternatesSingleAndMultipleBranchesAfterErrors()
+	{
+		String[?] sources = .(
+			"class C { int F() => x\n#if A\n+ 1\n#endif\n; }",
+			"class C { void F() => Work(); enum E { One, Two } }",
+			"class C { void F() => Call(\n#if A\n1\n#else\n+\n#endif\n); }",
+			"enum E { One = 3 > 1 ? 2 : 3, Two }",
+			"class C { void F() => Work(\n#if A\n1\n#else\n2\n#endif\n); }",
+			"class C { void F() => Work(\n#if A\n// comment\n#endif\n1); }");
+		let reused = scope Formatter();
+		for (let source in sources)
+		{
+			let text = scope String(source);
+			let fresh = scope Formatter();
+			let actual = reused.Analyze(text);
+			let expected = fresh.Analyze(text);
+			Test.Assert((actual case .Ok) == (expected case .Ok), reused.Error);
+			Test.Assert(reused.Error == fresh.Error);
+			if (actual case .Err)
+			{
+				Test.Assert(reused.Edits.IsEmpty);
+				continue;
+			}
+			let actualOutput = scope String();
+			let expectedOutput = scope String();
+			reused.Apply(actualOutput);
+			fresh.Apply(expectedOutput);
+			Test.Assert(actualOutput == expectedOutput, actualOutput);
+			Test.Assert(reused.Analyze(actualOutput) case .Ok, reused.Error);
+			Test.Assert(reused.Edits.IsEmpty, actualOutput);
+		}
+	}
+
 	static void ProtectedText(String source, String output)
 	{
 		let tokens = scope List<SourceToken>();
