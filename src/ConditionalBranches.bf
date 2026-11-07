@@ -20,9 +20,16 @@ struct ConditionalFrame
 
 class ConditionalBranch
 {
+	struct ActiveRange
+	{
+		public int Start;
+		public int End;
+	}
+
 	public String Text ~ delete _;
 	public List<SourceToken> Tokens = new .() ~ delete _;
 	public List<ConditionalFrame> Frames = new .() ~ delete _;
+	List<ActiveRange> mActiveRanges = new .() ~ delete _;
 	public bool Active => Frames.IsEmpty || Frames.Back.Active;
 
 	public this(String text)
@@ -35,7 +42,30 @@ class ConditionalBranch
 		let result = new ConditionalBranch(Text);
 		result.Tokens.AddRange(Tokens);
 		result.Frames.AddRange(Frames);
+		result.mActiveRanges.AddRange(mActiveRanges);
 		return result;
+	}
+
+	public void Include(SourceToken token)
+	{
+		if (!mActiveRanges.IsEmpty && mActiveRanges.Back.End == token.Start)
+			mActiveRanges[mActiveRanges.Count - 1].End = token.End;
+		else
+			mActiveRanges.Add(.() { Start = token.Start, End = token.End });
+	}
+
+	public bool IsActive(int position)
+	{
+		int low = 0, high = mActiveRanges.Count;
+		while (low < high)
+		{
+			int middle = low + (high - low) / 2;
+			if (mActiveRanges[middle].End <= position)
+				low = middle + 1;
+			else
+				high = middle;
+		}
+		return low < mActiveRanges.Count && mActiveRanges[low].Start <= position;
 	}
 
 	public void Mask(SourceToken token)
@@ -59,6 +89,8 @@ static class ConditionalBranches
 			for (int i = 0; i < count; i++)
 			{
 				let branch = branches[i];
+				if (!token.IsDirective && branch.Active)
+					branch.Include(token);
 				if (token.IsTrivia)
 					branch.Mask(token);
 				else if (branch.Active)

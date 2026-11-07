@@ -23,6 +23,33 @@ public class SourceEdit
 
 public class Formatter
 {
+	struct SyntaxRewrite : IHashable
+	{
+		public int Start;
+		public int End;
+		public int Closing;
+		public int Depth;
+		public StringView Rule;
+
+		public int GetHashCode()
+		{
+			int hash = HashCode.Mix(Start, End);
+			hash = HashCode.Mix(hash, Closing);
+			hash = HashCode.Mix(hash, Depth);
+			return HashCode.Mix(hash, Rule.GetHashCode());
+		}
+
+		public static bool operator==(SyntaxRewrite a, SyntaxRewrite b)
+			=> a.Start == b.Start && a.End == b.End && a.Closing == b.Closing && a.Depth == b.Depth && a.Rule == b.Rule;
+	}
+
+	HashSet<SyntaxRewrite> mBranchRewrites;
+	HashSet<SyntaxRewrite> mPreservedRewrites = new .() ~ delete _;
+	bool mPlanning;
+	bool mCollectGaps;
+	HashSet<int> mOuterAngleBodies = new .() ~ delete _;
+	Dictionary<int, SourceEdit> mGapRequirements = new .() ~ DeleteDictionaryAndValues!(_);
+
 	struct LineIndent
 	{
 		public int Start;
@@ -128,6 +155,37 @@ public class Formatter
 
 	void Add(int start, int end, StringView text, StringView rule)
 	{
+		if (mPlanning)
+			return;
+		if (mCollectGaps && OnlySpace(start, end) && Whitespace(text))
+		{
+			if (mGapRequirements.TryGetValue(start, let requirement))
+			{
+				if (requirement != null && (requirement.End != end || requirement.Text != text))
+				{
+					mGapRequirements[start] = null;
+					delete requirement;
+				}
+			}
+			else
+				mGapRequirements.Add(start, new SourceEdit(start, end, text, rule));
+			return;
+		}
+		CommitEdit(start, end, text, rule);
+	}
+
+	bool Whitespace(StringView text)
+	{
+		for (let c in text)
+		{
+			if (!IsSpace(c))
+				return false;
+		}
+		return true;
+	}
+
+	void CommitEdit(int start, int end, StringView text, StringView rule)
+	{
 		if (mSource.Substring(start, end - start) == text)
 			return;
 		if (mEditsByStart.TryGetValue(start, let edit))
@@ -175,6 +233,14 @@ public class Formatter
 		Add(start, end, desired, rule);
 	}
 
+	int WhitespaceStartBefore(int position)
+	{
+		int previous = SourceTokenAfter(position) - 1;
+		while (previous >= 0 && OnlySpace(mSourceTokens[previous].Start, mSourceTokens[previous].End))
+			previous--;
+		return previous >= 0 ? mSourceTokens[previous].End : 0;
+	}
+
 	void BodyGap(int left, int right, int indent, StringView rule, bool braced = false, bool preserveBlank = false)
 	{
 		if (left < 0 || right >= mTokens.Count)
@@ -193,9 +259,7 @@ public class Formatter
 		}
 		// Keep comments attached to their original tokens. Only the whitespace
 		// after the final comment belongs to the following statement's layout.
-		int tail = end;
-		while (tail > start && IsSpace(mSource[tail - 1]))
-			tail--;
+		int tail = Math.Max(start, WhitespaceStartBefore(end));
 		let desired = scope String(Newline(tail));
 		if (preserveBlank)
 		{
@@ -289,7 +353,7 @@ public class Formatter
 
 	void QueueIndent(int token, int depth)
 	{
-		if (token < 0 || token >= mTokens.Count)
+		if (mPlanning || token < 0 || token >= mTokens.Count)
 			return;
 		int end = mTokens[token].Start;
 		int start = end;
@@ -307,12 +371,16 @@ public class Formatter
 		for (int i = 0; i < mIndentation.Count; i++)
 		{
 			let indent = mIndentation[i];
-			if (i > 0 && mIndentation[i - 1].Start == indent.Start)
+			bool disputed = false;
+			int nextIndent = i + 1;
+			while (nextIndent < mIndentation.Count && mIndentation[nextIndent].Start == indent.Start)
 			{
-				if (mIndentation[i - 1].End != indent.End || mIndentation[i - 1].Depth != indent.Depth)
-					Fail("conflicting indentation across preprocessor branches");
-				continue;
+				disputed |= mIndentation[nextIndent].End != indent.End || mIndentation[nextIndent].Depth != indent.Depth;
+				nextIndent++;
 			}
+			i = nextIndent - 1;
+			if (disputed)
+				continue;
 			let desired = scope String();
 			for (int n = 0; n < indent.Depth; n++)
 				desired.Append('\t');
@@ -429,20 +497,23 @@ public class Formatter
 	{
 		// Outer angle tokens can be operators or generic delimiters. Preserve
 		// these lists until their expression boundaries can be resolved exactly.
-		for (int i = open + 1; i < close; i = Skip(i))
-		{
-			if (Kind(i) == .LArrow || Kind(i) == .RArrow)
-				return;
-		}
+		if (mOuterAngleBodies.Contains(mTokens[open].Start))
+			return;
 		QueueIndent(open, depth);
 		QueueIndent(close, depth);
 		BodyGap(open - 1, open, depth, "BF012");
 		if (open + 1 < close)
+		{
+			QueueIndent(open + 1, depth + 1);
 			BodyGap(open, open + 1, depth + 1, "BF012");
+		}
 		for (int i = open + 1; i < close; i = Skip(i))
 		{
 			if (Kind(i) == .Comma && i + 1 < close)
+			{
+				QueueIndent(i + 1, depth + 1);
 				BodyGap(i, i + 1, depth + 1, "BF012");
+			}
 		}
 		BodyGap(close - 1, close, depth, "BF012");
 	}
@@ -538,10 +609,10 @@ public class Formatter
 						Fail("unterminated expression-bodied member");
 						return;
 					}
-					ExpressionMember(header, i, semi, depth, method);
+					let expressionBlock = ExpressionMember(header, i, semi, depth, method);
 					callable = !type && method && OrdinaryMemberHeader(header, i);
 					data = !type && !method;
-					block = callable && ExplicitVoid(header, i);
+					block = callable && expressionBlock;
 					expressionMember = (callable || data) && !block;
 					i = semi + 1;
 					break;
@@ -564,7 +635,7 @@ public class Formatter
 					}
 					if (type)
 					{
-						if (close == i + 1 && Has(header, i, .Struct) && PrimaryConstructor(header, i) && OnlySpace(mTokens[i - 1].End, mTokens[i].Start) && OnlySpace(mTokens[i].End, mTokens[close].Start))
+						if (close == i + 1 && Has(header, i, .Struct) && PrimaryConstructor(header, i) && OnlySpace(mTokens[i - 1].End, mTokens[i].Start) && OnlySpace(mTokens[i].End, mTokens[close].Start) && RecordRewrite(mTokens[i].Start, mTokens[close].End, -1, depth, "BF010"))
 						{
 							Add(mTokens[i - 1].End, mTokens[close].End, ";", "BF010");
 							i = close + 1;
@@ -687,27 +758,28 @@ public class Formatter
 		Error.Set(message);
 	}
 
-	void ExpressionMember(int header, int arrow, int semi, int depth, bool method)
+	bool ExpressionMember(int header, int arrow, int semi, int depth, bool method)
 	{
 		// Beef verifies explicit-void expression bodies as statements. Keep the
 		// complete expression and its semicolon in the same method body scope.
-		if (method && ExplicitVoid(header, arrow))
+		if (method && ExplicitVoid(header, arrow) && RecordRewrite(mTokens[arrow].Start, mTokens[arrow].End, ClosingPosition(mTokens[semi].End), depth, "BF002"))
 		{
-			int tail = mTokens[arrow].Start;
-			while (tail > mTokens[arrow - 1].End && IsSpace(mSource[tail - 1]))
-				tail--;
+			int tail = WhitespaceStartBefore(mTokens[arrow].Start);
 			let opening = scope String();
 			IndentLine(opening, depth, tail);
 			opening.Append('{');
 			Add(tail, mTokens[arrow].End, opening, "BF002");
 			BodyGap(arrow, arrow + 1, depth + 1, "BF002");
+			QueueIndent(arrow + 1, depth + 1);
 			QueueClosing(mTokens[semi].End, depth, "BF002");
 			Lambdas(arrow + 1, semi, depth + 1);
-			return;
+			return true;
 		}
 		bool simple = method && SimpleExpression(arrow + 1, semi);
 		if (method)
+		{
 			Gap(arrow - 1, arrow, depth + 1, !simple, "BF003");
+		}
 		else
 			Gap(arrow - 1, arrow, 0, false, "BF006");
 		// Joining only whitespace gaps cannot change comments or multiline literals.
@@ -732,6 +804,7 @@ public class Formatter
 		else
 			Gap(arrow, arrow + 1, 0, false, "BF003");
 		Lambdas(arrow + 1, semi, method ? depth + 1 : depth);
+		return false;
 	}
 
 	bool SimpleExpression(int start, int end)
@@ -983,6 +1056,8 @@ public class Formatter
 					wrap = false;
 			}
 		}
+		if (wrap)
+			wrap = RecordRewrite(mTokens[body].Start, mTokens[boundary - 1].End, ClosingPosition(mTokens[boundary - 1].End), depth, "BF004");
 		if (Kind(body) != .LCurly)
 			BodyGap(body - 1, body, wrap ? depth : depth + 1, wrap ? "BF004" : "BF007", wrap);
 		int next = Statement(body, end, depth + (Kind(body) == .LCurly ? 0 : 1), normalize || wrap);
@@ -995,6 +1070,8 @@ public class Formatter
 
 	void QueueClosing(int position, int depth, StringView rule)
 	{
+		if (mPlanning)
+			return;
 		let brace = ClosingBrace() { Position = ClosingPosition(position), Depth = depth, Rule = rule };
 		if (mClosingKeys.Add(brace))
 			mClosingBraces.Add(brace);
@@ -1177,10 +1254,49 @@ public class Formatter
 		}
 	}
 
+	bool RecordRewrite(int start, int end, int closing, int depth, StringView rule)
+	{
+		let rewrite = SyntaxRewrite() { Start = start, End = end, Closing = closing, Depth = depth, Rule = rule };
+		if (mPlanning)
+			mBranchRewrites.Add(rewrite);
+		return !mPreservedRewrites.Contains(rewrite);
+	}
+
+	void PreserveDisputedRewrites(List<ConditionalBranch> branches, List<HashSet<SyntaxRewrite>> rewrites)
+	{
+		// Both ends belong to one operation. Agreement on individual insertions
+		// would allow one branch to receive a closing brace without its opening.
+		let visited = scope HashSet<SyntaxRewrite>();
+		for (let plan in rewrites)
+		{
+			for (let rewrite in plan)
+			{
+				if (!visited.Add(rewrite))
+					continue;
+				for (int i = 0; i < branches.Count; i++)
+				{
+					let branch = branches[i];
+					bool affected = branch.IsActive(rewrite.Start) || branch.IsActive(rewrite.End - 1) || rewrite.Closing >= 0 && branch.IsActive(rewrite.Closing - 1);
+					if (affected && !rewrites[i].Contains(rewrite))
+					{
+						mPreservedRewrites.Add(rewrite);
+					}
+				}
+			}
+		}
+	}
+
 	public Result<void> Analyze(String source)
 	{
 		mTokens.Clear();
 		mPairs.Clear();
+		mOuterAngleBodies.Clear();
+		mPreservedRewrites.Clear();
+		mPlanning = false;
+		mCollectGaps = true;
+		for (let requirement in mGapRequirements.Values)
+			delete requirement;
+		mGapRequirements.Clear();
 		mEditsByStart.Clear();
 		ClearAndDeleteItems(Edits);
 		Error.Clear();
@@ -1218,11 +1334,47 @@ public class Formatter
 		let branches = scope List<ConditionalBranch>();
 		defer ClearAndDeleteItems(branches);
 		Try!(ConditionalBranches.Expand(source, all, branches, Error));
+		// Union exclusions before any branch emits edits to a shared body.
+		let delimiters = scope List<SourceToken>();
+		for (let branch in branches)
+		{
+			delimiters.Clear();
+			for (let token in branch.Tokens)
+			{
+				if ((token.Type == .LArrow || token.Type == .RArrow) && !delimiters.IsEmpty && delimiters.Back.Type == .LCurly)
+					mOuterAngleBodies.Add(delimiters.Back.Start);
+				if (token.Type == .LParen || token.Type == .LBracket || token.Type == .LCurly)
+					delimiters.Add(token);
+				if ((token.Type == .RParen || token.Type == .RBracket || token.Type == .RCurly) && !delimiters.IsEmpty)
+					delimiters.PopBack();
+			}
+		}
+		let rewrites = scope List<HashSet<SyntaxRewrite>>();
+		defer
+		{
+			mBranchRewrites = null;
+			ClearAndDeleteItems(rewrites);
+		}
+		mPlanning = true;
+		for (let branch in branches)
+		{
+			mBranchRewrites = new .();
+			rewrites.Add(mBranchRewrites);
+			Try!(AnalyzeBranch(branch));
+		}
+		PreserveDisputedRewrites(branches, rewrites);
+		mPlanning = false;
 		for (let branch in branches)
 			Try!(AnalyzeBranch(branch));
+		for (let requirement in mGapRequirements.Values)
+		{
+			if (requirement != null)
+				CommitEdit(requirement.Start, requirement.End, requirement.Text, requirement.Rule);
+		}
 		ValidateEdits();
 		if (mFailed)
 			return .Err;
+		mCollectGaps = false;
 		CollapseBlankLines(all);
 		CloseBodies();
 		if (mFailed)
@@ -1345,8 +1497,11 @@ public class Formatter
 			}
 			if (!Boundary(previous))
 			{
-				Fail("directives inside a statement or member header are unsupported");
-				return false;
+				if (name != "if" && name != "elif" && name != "else" && name != "endif" && name != "region" && name != "endregion")
+				{
+					Fail("nonconditional directives inside a statement or member header are unsupported");
+					return false;
+				}
 			}
 			if (name == "if")
 			{

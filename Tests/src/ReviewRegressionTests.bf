@@ -1,10 +1,23 @@
 using System;
+using System.Collections;
 using BeefFormat;
 
 namespace BeefFormat.Tests;
 
 class ReviewRegressionTests
 {
+	[Test]
+	public static void AlignedPrimaryStructsFormatThroughAnalyze()
+	{
+		let source = scope String();
+		for (int i = 0; i < 4096; i++)
+			source.AppendF("struct S{} : this(int X) {{}}\n", i);
+		let output = scope String();
+		Format(source, output);
+		for (int i = 0; i < 4096; i++)
+			Test.Assert(output.Contains(scope String()..AppendF("struct S{} : this(int X);", i)));
+	}
+
 	static void Format(String input, String output)
 	{
 		let formatter = scope Formatter();

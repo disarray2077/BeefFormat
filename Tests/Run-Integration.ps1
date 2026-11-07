@@ -225,6 +225,44 @@ $branchText = [IO.File]::ReadAllText($branchFile)
 Assert-True ($branchText.Contains("#if A`n") -and $branchText.Contains("#else`n") -and $branchText.Contains("#endif`n")) 'Directive changed'
 Assert-True ($branchText.Contains("`t`treturn 1;") -and $branchText.Contains("`t`treturn 2;")) 'Branch was skipped'
 Invoke-Formatter 0 @($branchFile)
+$conditionalText = "class C`n{`n#if A`n[Inline]`n#endif`nvoid F() => Call(`n#if B`n`"ç {literal}`"`n#else`n`"other`"`n#endif`n); // tail`nvoid G() { while (ready) if (ready) Tick(); } struct S : this(int X) {}`n}`n"
+foreach ($encoding in @([Text.UTF8Encoding]::new($false), [Text.UTF8Encoding]::new($true), [Text.UnicodeEncoding]::new($false, $true, $true))) {
+    foreach ($newline in @("`n", "`r`n")) {
+        $conditionalFile = Join-Path $fixtureRoot 'conditional-syntax.bf'
+        [IO.File]::WriteAllText($conditionalFile, $conditionalText.Replace("`n", $newline), $encoding)
+        $originalHash = (Get-FileHash -LiteralPath $conditionalFile).Hash
+        foreach ($mode in @('--check', '--diff')) {
+            Invoke-Formatter 1 @($mode, $conditionalFile)
+            Assert-True ((Get-FileHash -LiteralPath $conditionalFile).Hash -eq $originalHash) 'Conditional syntax preview wrote input'
+        }
+        Invoke-Formatter 0 @('--write', $conditionalFile)
+        $conditionalResult = [IO.File]::ReadAllText($conditionalFile)
+        Assert-True ($conditionalResult.Contains("void F()${newline}`t{${newline}`t`tCall(")) 'Conditional syntax suppressed the void rule'
+        Assert-True ($conditionalResult.Contains("while (ready)${newline}`t`t{${newline}`t`t`tif (ready)")) 'Conditional syntax suppressed nested-control braces'
+        Assert-True ($conditionalResult.Contains('struct S : this(int X);')) 'Conditional syntax suppressed primary-struct conversion'
+        Assert-True ($conditionalResult.Contains("#if B${newline}`"ç {literal}`"${newline}#else${newline}`"other`"${newline}#endif${newline}")) 'Conditional alternatives changed'
+        Assert-True ($conditionalResult.EndsWith($newline)) 'Conditional final newline changed'
+        Assert-True ([Convert]::ToHexString([IO.File]::ReadAllBytes($conditionalFile)) -eq [Convert]::ToHexString([byte[]]($encoding.GetPreamble() + $encoding.GetBytes($conditionalResult)))) 'Conditional encoding or BOM changed'
+        Invoke-Formatter 0 @('--check', $conditionalFile)
+    }
+}
+foreach ($validConditional in @("class C {`n#if A`nvoid F() =>`n#else`nint F() =>`n#endif`nCall();`nvoid G() => Work();`n}", "class C { void F() =>`n#if A`nTick();`n#else`nTock();`n#endif`nvoid G() => Work();`n}", "class C { void F() {`n#if A`nif (ready)`n#endif`nwhile (ready) Tick();`n} void G() => Work(); }", "class C { void F() => Call(`n#region Value  `n1`n#endregion`n); void G() => Work(); }")) {
+    Write-Utf8 $branchFile $validConditional
+    $branchHash = (Get-FileHash -LiteralPath $branchFile).Hash
+    foreach ($mode in @('--check', '--diff')) {
+        Invoke-Formatter 1 @($mode, $branchFile)
+        Assert-True ((Get-FileHash -LiteralPath $branchFile).Hash -eq $branchHash) 'Conditional preview wrote input'
+    }
+    Invoke-Formatter 0 @('--write', $branchFile)
+    Assert-True ([IO.File]::ReadAllText($branchFile).Contains("void G()`n`t{`n`t`tWork();`n`t}")) 'Preserved construct prevented unrelated formatting'
+    Invoke-Formatter 0 @('--check', $branchFile)
+}
+Write-Utf8 $branchFile "class C { void F() { Call(`n#if A`n1`n#else`n+`n#endif`n); } }"
+$branchHash = (Get-FileHash -LiteralPath $branchFile).Hash
+foreach ($mode in @('--check', '--diff', '--write')) {
+    Invoke-Formatter 2 @($mode, $branchFile)
+    Assert-True ((Get-FileHash -LiteralPath $branchFile).Hash -eq $branchHash) 'Malformed conditional syntax was written'
+}
 $variants = [Text.StringBuilder]::new()
 for ($i = 0; $i -lt 9; $i++) {
     [void]$variants.Append("#if FLAG$i`nclass C$i {}`n#endif`n")
@@ -434,6 +472,106 @@ $afterBehavior = (& $behaviorExe | Out-String)
 Assert-True ($LASTEXITCODE -eq 0) 'Formatted behavior fixture failed'
 Assert-True ($beforeBehavior -eq $afterBehavior) 'Behavior or ownership changed'
 Invoke-Formatter 0 @($behaviorSource)
+
+# Compile all three alternatives before and after shared syntax rewrites.
+$conditionalBehavior = Join-Path $fixtureRoot 'conditional-behavior'
+New-Item -ItemType Directory -Path (Join-Path $conditionalBehavior 'src') -Force | Out-Null
+Write-Utf8 (Join-Path $conditionalBehavior 'BeefSpace.toml') @'
+FileVersion = 1
+[Workspace]
+StartupProject = "ConditionalBehavior"
+[Projects]
+ConditionalBehavior = {Path = "."}
+'@
+Write-Utf8 (Join-Path $conditionalBehavior 'BeefProj.toml') @'
+FileVersion = 1
+[Project]
+Name = "ConditionalBehavior"
+StartupObject = "ConditionalBehavior.Program"
+'@
+$conditionalBehaviorSource = Join-Path $conditionalBehavior 'src\Program.bf'
+Write-Utf8 $conditionalBehaviorSource @'
+using System;
+namespace ConditionalBehavior;
+class Owner { public ~this() { Program.Destroyed++; } }
+struct Pair : this(
+#if FIRST
+int X
+#elif SECOND
+int X
+#else
+int X
+#endif
+) {}
+class Program
+{
+    public static int Destroyed;
+    static int Total;
+    static void Consume(Owner owner, delegate void() callback, int amount) { Total += amount; callback(); }
+#if FIRST
+[Inline]
+#elif SECOND
+[Inline]
+#endif
+    static void Run() => Consume(scope Owner(), scope () => Total++,
+#if FIRST
+1
+#elif SECOND
+2
+#else
+3
+#endif
+);
+    static int Choose(bool flag)
+    {
+#if FIRST
+        if (flag)
+#endif
+        for (let ch in StringView(
+#if FIRST
+"a"
+#elif SECOND
+"b"
+#else
+"c"
+#endif
+)) if (flag) return (int)ch;
+        return 0;
+    }
+    public static int Main()
+    {
+        Run();
+        Pair pair = .(7);
+        int expected = Choose(true) - 95;
+        Console.WriteLine("{}:{}:{}:{}", Total, Destroyed, Choose(true), pair.X);
+        return Total == expected && Destroyed == 1 && Choose(false) == 0 && Choose(true) == expected + 95 && pair.X == 7 ? 0 : 1;
+    }
+}
+'@
+$conditionalBehaviorExe = Join-Path $conditionalBehavior 'build\Debug_Win64\ConditionalBehavior\ConditionalBehavior.exe'
+$beforeConditional = @{}
+foreach ($phase in @('before', 'after')) {
+    if ($phase -eq 'after') {
+        Invoke-Formatter 0 @('--write', $conditionalBehaviorSource)
+        $conditionalBehaviorResult = [IO.File]::ReadAllText($conditionalBehaviorSource).Replace("`r`n", "`n")
+        Assert-True (-not $conditionalBehaviorResult.Contains('static void Run() =>')) 'Shared arrow was not converted'
+        Assert-True ($conditionalBehaviorResult.Contains("#endif`n);`n`nclass Program")) 'Shared primary-struct braces were not converted'
+        Assert-True ($conditionalBehaviorResult.Contains("#if FIRST`n`t`tif (flag)`n#endif")) 'Conditional parent was lost'
+        Invoke-Formatter 0 @('--check', $conditionalBehaviorSource)
+    }
+    foreach ($variant in @('DEFAULT', 'FIRST', 'SECOND')) {
+        $buildArguments = @("-workspace=$conditionalBehavior", '-verbosity=minimal')
+        if ($variant -ne 'DEFAULT') { $buildArguments += "-define=$variant" }
+        & $Compiler @buildArguments
+        Assert-True ($LASTEXITCODE -eq 0) "$phase conditional behavior did not compile for $variant"
+        $conditionalRun = (& $conditionalBehaviorExe | Out-String)
+        Assert-True ($LASTEXITCODE -eq 0) "$phase conditional behavior failed for $variant"
+        $expectedConditional = @{ DEFAULT = '4:1:99:7'; FIRST = '2:1:97:7'; SECOND = '3:1:98:7' }
+        Assert-True ($conditionalRun.Trim() -eq $expectedConditional[$variant]) "$phase conditional behavior selected the wrong alternative for $variant"
+        if ($phase -eq 'before') { $beforeConditional[$variant] = $conditionalRun }
+        else { Assert-True ($beforeConditional[$variant] -eq $conditionalRun) "Conditional behavior, discard or ownership changed for $variant" }
+    }
+}
 $regressionIndex = 0
 foreach ($regressionSource in $RegressionFile) {
     $originalRegressionHash = (Get-FileHash -LiteralPath $regressionSource).Hash

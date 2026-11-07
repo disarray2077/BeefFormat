@@ -60,9 +60,9 @@ class EnumTests
 		Format("#if A\r\nenum E { One = 1, Last = 3 }\r\n#else\r\nenum E { Other = 2, Last = 3 }\r\n#endif\r\n", output);
 		Test.Assert(output.Contains("#if A\r\nenum E\r\n{\r\n\tOne = 1,\r\n\tLast = 3\r\n}\r\n#else\r\n"), output);
 		Test.Assert(output.EndsWith("\r\n#endif\r\n"));
-		let unsupported = scope Formatter();
-		Test.Assert(unsupported.Analyze("enum E {\n#if A\nOne,\n#endif\nLast\n}") case .Err);
-		Test.Assert(unsupported.Edits.IsEmpty);
+		output.Clear();
+		Format("enum E {\n#if A\nOne,\n#endif\nLast\n}", output);
+		Test.Assert(output == "enum E\n{\n#if A\n\tOne,\n#endif\n\tLast\n}", output);
 	}
 
 	[Test]
